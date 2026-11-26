@@ -36,7 +36,7 @@ variable "developer_key_scope_mode" {
 variable "enable_dsql" {
   type        = bool
   description = "Provision the Amazon Aurora DSQL cluster and attach IAM connect policies to Lambda roles."
-  default     = false
+  default     = true
 }
 
 variable "store_backend" {

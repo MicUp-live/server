@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>MicUp.live Developer API Reference</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+  <style>
+    :root {
+      --bg: #0d0f18;
+      --card-bg: #141726;
+      --border: #232840;
+      --text: #f0f2ff;
+      --text-muted: #8b92b2;
+      --accent: #00e5ff;
+    }
+    body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1rem 2rem;
+      background: var(--card-bg);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #fff;
+      text-decoration: none;
+    }
+    .brand span.badge {
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: rgba(0, 229, 255, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(0, 229, 255, 0.3);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .links {
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+    }
+    .links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.15s ease;
+    }
+    .links a:hover {
+      color: var(--accent);
+    }
+    .links a.btn {
+      padding: 0.45rem 0.9rem;
+      border-radius: 6px;
+      background: var(--border);
+      color: var(--text);
+    }
+    .links a.btn:hover {
+      background: #2e3555;
+      color: #fff;
+    }
+    /* Swagger UI dark theme overrides */
+    .swagger-ui {
+      filter: invert(88%) hue-rotate(180deg);
+      padding-bottom: 4rem;
+    }
+    .swagger-ui .topbar { display: none !important; }
+    .swagger-ui img, .swagger-ui svg { filter: invert(100%) hue-rotate(180deg); }
+    .swagger-ui .info .title { color: #000; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a href="/" class="brand">
+      <span>🎤 MicUp.live</span>
+      <span class="badge">API Reference</span>
+    </a>
+    <nav class="links">
+      <a href="/docs#developer-api">📖 User Docs</a>
+      <a href="/openapi.json" download="openapi.json" class="btn">⬇️ openapi.json</a>
+      <a href="/openapi.yaml" download="openapi.yaml" class="btn">⬇️ openapi.yaml</a>
+    </nav>
+  </header>
+
+  <div id="swagger-ui"></div>
+
+  <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+  <script>
+    window.onload = function() {
+      window.ui = SwaggerUIBundle({
+        url: "/openapi.json",
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        presets: [
+          SwaggerUIBundle.presets.apis,
+          SwaggerUIBundle.SwaggerUIStandalonePreset
+        ],
+        layout: "BaseLayout"
+      });
+    };
+  </script>
+</body>
+</html>

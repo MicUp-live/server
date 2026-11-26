@@ -1,0 +1,38 @@
+name: Update Canonical Reference Catalog
+
+on:
+  schedule:
+    # Every Wednesday at 06:00 UTC (before the weekend karaoke rush)
+    - cron: '0 6 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: update-reference-catalog
+  cancel-in-progress: false
+
+jobs:
+  update-reference:
+    name: Compile & Publish Reference Catalog
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+
+      - uses: jdx/mise-action@v3
+
+      - name: Install poppler-utils (pdftotext) for PDF songbook ingestion
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends poppler-utils
+
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+
+      - name: Fetch vendor catalog, compile dictionary, and publish to S3/CloudFront
+        run: mise run reference:update

@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: main
+      - name: Configure release committer
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      - uses: jdx/mise-action@v3
+      - name: Validate release history
+        shell: bash
+        run: |
+          set -euo pipefail
+          base="$(git describe --tags --abbrev=0 2>/dev/null || echo 922e623)"
+          mise run release:check -- "${base}..HEAD"
+      - name: Determine version and release notes
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(mise run release:version)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          mise run release:notes > RELEASE_NOTES.md
+      - name: Create signed release tag and GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="v${VERSION}"
+          git tag -a "$tag" -m "chore(release): $tag"
+          git push origin "$tag"
+          gh release create "$tag" --title "$tag" --notes-file RELEASE_NOTES.md

@@ -1,0 +1,124 @@
+{
+  "contract_id": "C03",
+  "description": "PATCH /api/v1/events/{id}/requests/{requestID} status mutations covering canonical statuses, compatibility input aliases (playing->up_next, declined->rejected), omitted optional song_id, expected_queue_version, Idempotency-Key, and unknown future request fields",
+  "mutations": [
+    {
+      "name": "accept_pending_request_with_precondition_and_unknown_field",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/events/evt_contract_01/requests/req_contract_03",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "11111111-2222-4333-8444-555555555501"
+        },
+        "body": {
+          "status": "accepted",
+          "expected_queue_version": 7,
+          "future_client_hint": "host_deck_v2"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "8"
+        },
+        "expected_fields": {
+          "id": "req_contract_03",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_id": "s_01h9x99",
+          "song_title": "Shallow",
+          "song_artist": "Lady Gaga & Bradley Cooper",
+          "singer_name": "Charlie",
+          "key_change": 2,
+          "notes": "Need two wireless mics",
+          "status": "accepted",
+          "round": 2,
+          "singer_turn": 1
+        }
+      }
+    },
+    {
+      "name": "compatibility_alias_playing_normalizes_to_up_next_without_song_id",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/events/evt_contract_01/requests/req_contract_02",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "11111111-2222-4333-8444-555555555502"
+        },
+        "body": {
+          "status": "playing",
+          "expected_queue_version": 8
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "9"
+        },
+        "expected_fields": {
+          "id": "req_contract_02",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_title": "Mr. Brightside",
+          "song_artist": "The Killers",
+          "singer_name": "Bob",
+          "key_change": -1,
+          "status": "up_next",
+          "round": 1,
+          "singer_turn": 1
+        },
+        "omitted_fields": [
+          "song_id",
+          "notes",
+          "decline_reason"
+        ]
+      }
+    },
+    {
+      "name": "compatibility_alias_declined_normalizes_to_rejected_with_reason",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/events/evt_contract_01/requests/req_contract_03",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "11111111-2222-4333-8444-555555555503"
+        },
+        "body": {
+          "status": "declined",
+          "decline_reason": "Singer stepped outside",
+          "expected_queue_version": 9
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "10"
+        },
+        "expected_fields": {
+          "id": "req_contract_03",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_id": "s_01h9x99",
+          "song_title": "Shallow",
+          "song_artist": "Lady Gaga & Bradley Cooper",
+          "singer_name": "Charlie",
+          "key_change": 2,
+          "notes": "Need two wireless mics",
+          "status": "rejected",
+          "decline_reason": "Singer stepped outside"
+        }
+      }
+    }
+  ]
+}

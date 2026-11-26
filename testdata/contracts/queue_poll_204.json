@@ -1,0 +1,59 @@
+{
+  "contract_id": "C03",
+  "description": "Conditional queue polling 204 No Content with zero-byte body and X-Queue-Version header when since matches current queue_version",
+  "cases": [
+    {
+      "name": "host_requests_no_change_204",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/events/evt_contract_01/requests?since=7",
+        "required_scope": "requests:read",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_read"
+        }
+      },
+      "response": {
+        "status": 204,
+        "headers": {
+          "X-Queue-Version": "7"
+        },
+        "body_bytes": 0,
+        "body": ""
+      }
+    },
+    {
+      "name": "public_queue_no_change_204",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/events/evt_contract_01/queue?since=7",
+        "headers": {}
+      },
+      "response": {
+        "status": 204,
+        "headers": {
+          "X-Queue-Version": "7"
+        },
+        "body_bytes": 0,
+        "body": ""
+      }
+    },
+    {
+      "name": "host_requests_stale_since_returns_200",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/events/evt_contract_01/requests?since=6",
+        "required_scope": "requests:read",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_read"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "7"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,39 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      plan_only:
+        description: Build artifacts and preview the production OpenTofu plan without applying
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: jdx/mise-action@v3
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-2
+      - name: Preview production plan
+        if: ${{ inputs.plan_only }}
+        run: |
+          mise run build:all
+          mise run tofu:plan
+      - name: Build and deploy production
+        if: ${{ !inputs.plan_only }}
+        run: mise run deploy:production

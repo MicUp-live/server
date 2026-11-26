@@ -1,0 +1,71 @@
+{
+  "contract_id": "C03",
+  "description": "GET /api/v1/events/{id}/queue public queue 200 snapshot containing only accepted and up_next requests with private fields omitted",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/events/evt_contract_01/queue",
+    "headers": {}
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Queue-Version": "7"
+    },
+    "body": {
+      "event_id": "evt_contract_01",
+      "event_name": "Friday Night Live Karaoke",
+      "venue_name": "The Dubliner",
+      "join_code": "DUBL",
+      "event_status": "active",
+      "songbook_id": "sb_contract_01",
+      "tip_url": "https://venmo.com/kjdave",
+      "announcement": "Welcome singers! Ask about duets.",
+      "rotation_mode": "round_robin",
+      "auto_accept": false,
+      "submission_delay": 60,
+      "current_round": 2,
+      "queue_version": 7,
+      "queue": [
+        {
+          "id": "req_contract_01",
+          "singer_name": "Alice",
+          "song_title": "Bohemian Rhapsody",
+          "song_artist": "Queen",
+          "key_change": 0,
+          "status": "up_next",
+          "rank": 1,
+          "round": 1,
+          "singer_turn": 1,
+          "created_at": "2026-10-16T20:05:00Z"
+        },
+        {
+          "id": "req_contract_02",
+          "singer_name": "Bob",
+          "song_title": "Mr. Brightside",
+          "song_artist": "The Killers",
+          "key_change": -1,
+          "status": "accepted",
+          "rank": 11760645400000,
+          "round": 1,
+          "singer_turn": 1,
+          "created_at": "2026-10-16T20:06:00Z"
+        }
+      ]
+    },
+    "forbidden_item_fields": [
+      "notes",
+      "decline_reason",
+      "cancel_token",
+      "song_id",
+      "event_id",
+      "songbook_id"
+    ],
+    "excluded_statuses": [
+      "pending",
+      "completed",
+      "rejected",
+      "cancelled"
+    ]
+  }
+}

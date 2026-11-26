@@ -1,0 +1,78 @@
+# Mise secrets
+.mise.prod.toml
+.mise*.local.toml
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Environment
+.env
+.env.*
+!.env.example
+.env.example
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# Docker
+docker-compose.override.yml
+
+# Generated data
+/data/
+micup.json
+*.csv
+!internal/reference/data/
+!internal/reference/data/**
+
+# Go
+micup-server
+server
+
+# OpenTofu / Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+*.tfplan
+tfplan
+
+# Assistant / Agent customizations
+.agents/
+plugins/
+skills-lock.json
+
+# Playwright vignette runner artifacts & auth state
+scripts/vignettes/node_modules/
+scripts/vignettes/output/
+scripts/vignettes/.auth/
+
+# Private planning notes (never commit)
+.private/

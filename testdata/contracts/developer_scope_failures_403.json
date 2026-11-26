@@ -1,0 +1,229 @@
+{
+  "contract_id": "C01",
+  "description": "Developer API key scope enforcement failures (403 insufficient_scope) in DEV_KEY_SCOPE_MODE=enforce across host integration routes",
+  "scope_mode": "enforce",
+  "cases": [
+    {
+      "name": "list_events_requires_events_read",
+      "granted_scopes": [
+        "requests:read"
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/events",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_events_read"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "events:read"
+        }
+      }
+    },
+    {
+      "name": "list_event_requests_requires_requests_read",
+      "granted_scopes": [
+        "events:read"
+      ],
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/events/evt_contract_01/requests",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_requests_read"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "requests:read"
+        }
+      }
+    },
+    {
+      "name": "update_event_request_requires_requests_write",
+      "granted_scopes": [
+        "events:read",
+        "requests:read"
+      ],
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/events/evt_contract_01/requests/req_contract_01",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_requests_write",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "status": "completed",
+          "expected_queue_version": 7
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "requests:write"
+        }
+      }
+    },
+    {
+      "name": "reorder_event_requests_requires_requests_write",
+      "granted_scopes": [
+        "events:read",
+        "requests:read"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/events/evt_contract_01/requests/reorder",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_requests_write",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "order": [
+            "req_contract_01",
+            "req_contract_02"
+          ],
+          "expected_queue_version": 7
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "requests:write"
+        }
+      }
+    },
+    {
+      "name": "create_event_requires_events_write",
+      "granted_scopes": [
+        "events:read"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/events",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_events_write",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "songbook_id": "sb_contract_01",
+          "name": "Unauthorized Event"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "events:write"
+        }
+      }
+    },
+    {
+      "name": "create_song_requires_catalogs_write",
+      "granted_scopes": [
+        "events:read",
+        "requests:read"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/songbooks/sb_contract_01/songs",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_catalogs_write",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "artist": "Queen",
+          "title": "Bohemian Rhapsody"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "catalogs:write"
+        }
+      }
+    },
+    {
+      "name": "pause_event_requires_events_write",
+      "granted_scopes": [
+        "events:read",
+        "requests:read"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/events/evt_contract_01/pause",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_events_write_pause",
+          "Content-Type": "application/json"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "events:write"
+        }
+      }
+    },
+    {
+      "name": "resume_event_requires_events_write",
+      "granted_scopes": [
+        "events:read",
+        "requests:read"
+      ],
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/events/evt_contract_01/resume",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_missing_events_write_resume",
+          "Content-Type": "application/json"
+        }
+      },
+      "response": {
+        "status": 403,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "insufficient_scope",
+          "detail": "developer key does not include the required scope",
+          "required_scope": "events:write"
+        }
+      }
+    }
+  ]
+}

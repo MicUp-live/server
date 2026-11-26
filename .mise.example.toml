@@ -1,0 +1,26 @@
+# Copy this file to .mise.local.toml for personal local overrides:
+#   cp .mise.example.toml .mise.local.toml
+
+[tools]
+aws = { version = "2.36.19", symlink_bins = "true" }
+aws-sam = "1.166.2"
+go = "1.26.0"
+node = "22"
+opentofu = "1.9.4"
+watchexec = "2.5.1"
+
+[env]
+APP_ENV="development"
+DYNAMO_ENDPOINT="http://127.0.0.1:8000"
+DYNAMO_TABLE_PREFIX="micup-local-"
+AWS_REGION="us-east-2"
+AWS_EC2_METADATA_DISABLED="true"
+S3_ENDPOINT="http://127.0.0.1:4566"
+SQS_ENDPOINT="http://127.0.0.1:4566"
+EMAIL_TRANSPORT="log"
+CATALOG_ASSET_BUCKET="micup-app-local"
+CATALOG_BUILD_QUEUE_URL="http://127.0.0.1:4566/000000000000/micup-local-catalog-build"
+IMPORT_JOB_QUEUE_URL="http://127.0.0.1:4566/000000000000/micup-local-import-jobs"
+PUBLIC_BASE_URL="http://localhost:3000"
+AUTH_SECRET="development-only-secret-change-me-12345"
+# CORS_ALLOW_ORIGIN="http://localhost:3000"

@@ -1,0 +1,139 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Local-only SAM description of the MicUp Lambda fleet. This file is intended
+  for `sam local invoke` and `sam local start-api`; do not deploy it.
+
+Parameters:
+  DynamoEndpoint:
+    Type: String
+    Default: http://dynamodb:8000
+  AWSEndpoint:
+    Type: String
+    Default: http://localstack:4566
+  DynamoTablePrefix:
+    Type: String
+    Default: micup-local-
+  CatalogAssetBucket:
+    Type: String
+    Default: micup-app-local
+  CatalogBuildQueueURL:
+    Type: String
+    Default: http://localstack:4566/000000000000/micup-local-catalog-build
+  ImportJobQueueURL:
+    Type: String
+    Default: http://localstack:4566/000000000000/micup-local-import-jobs
+  AuthSecret:
+    Type: String
+    Default: local-only-auth-secret-change-me-1234567890
+
+Globals:
+  Function:
+    Runtime: provided.al2023
+    Architectures:
+      - x86_64
+    Timeout: 29
+    MemorySize: 512
+    Environment:
+      Variables:
+        APP_ENV: production
+        AWS_EC2_METADATA_DISABLED: 'true'
+        DYNAMO_ENDPOINT: !Ref DynamoEndpoint
+        S3_ENDPOINT: !Ref AWSEndpoint
+        SQS_ENDPOINT: !Ref AWSEndpoint
+        EMAIL_TRANSPORT: log
+        DYNAMO_TABLE_PREFIX: !Ref DynamoTablePrefix
+        CATALOG_ASSET_BUCKET: !Ref CatalogAssetBucket
+        CATALOG_BUILD_QUEUE_URL: !Ref CatalogBuildQueueURL
+        IMPORT_JOB_QUEUE_URL: !Ref ImportJobQueueURL
+        AUTH_SECRET: !Ref AuthSecret
+        PUBLIC_BASE_URL: https://micup.local
+        CORS_ALLOW_ORIGIN: https://micup.local
+        WEBAUTHN_RP_ID: micup.local
+        WEBAUTHN_ORIGINS: https://micup.local
+
+Resources:
+  Api:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/local/api/
+      Handler: bootstrap
+      Timeout: 29
+      Events:
+        CatchAll:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+            PayloadFormatVersion: '2.0'
+
+  CatalogWorker:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/local/catalog-worker/
+      Handler: bootstrap
+      Timeout: 900
+      MemorySize: 1024
+      Events:
+        CatalogBuildQueue:
+          Type: SQS
+          Properties:
+            Queue: arn:aws:sqs:us-east-2:000000000000:micup-local-catalog-build
+            BatchSize: 1
+
+  ImportWorker:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/local/import-worker/
+      Handler: bootstrap
+      Timeout: 900
+      MemorySize: 1024
+      Events:
+        ImportJobsQueue:
+          Type: SQS
+          Properties:
+            Queue: arn:aws:sqs:us-east-2:000000000000:micup-local-import-jobs
+            BatchSize: 1
+
+  CompactionDispatcher:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/local/compaction-dispatcher/
+      Handler: bootstrap
+      Timeout: 60
+      MemorySize: 256
+      Events:
+        HourlySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+
+  CatalogGC:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/local/catalog-gc/
+      Handler: bootstrap
+      Timeout: 120
+      Environment:
+        Variables:
+          GC_GRACE_PERIOD: 24h
+          GC_DRY_RUN: 'true'
+      Events:
+        WeeklySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 3 ? * SUN *)
+            Input: '{}'
+
+  ImportReconciler:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: ../dist/local/import-reconciler/
+      Handler: bootstrap
+      Timeout: 60
+      MemorySize: 256
+      Events:
+        ReconcileSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(5 minutes)

@@ -1,0 +1,51 @@
+.letter-bar {
+  display: flex;
+  gap: var(--space-2);
+  overflow-x: auto;
+  margin-bottom: var(--space-3);
+  padding: var(--space-1) 0 var(--space-2);
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.letter-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.letter-pill {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface);
+  color: var(--color-text-dim);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.letter-pill:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+.letter-pill.active {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  color: #fff;
+  box-shadow: 0 0 10px var(--color-accent-glow);
+}
+
+.letter-pill:disabled {
+  cursor: not-allowed;
+  opacity: 0.3;
+}
+
+.letter-count {
+  font-size: 0.75em;
+  opacity: 0.85;
+}

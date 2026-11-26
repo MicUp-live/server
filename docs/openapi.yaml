@@ -1,0 +1,2964 @@
+openapi: 3.0.3
+info:
+  title: MicUp.live API
+  description: "Complete REST API specification for MicUp.live \u2014 covering Singers,\
+    \ Hosts, Kiosks, Third-Party Developers, and OpenKJ Desktop integration.\n\n###\
+    \ Authentication Schemes\n- **Bearer JWT**: Standard host session token issued\
+    \ via `/auth/login` or passkeys (`Authorization: Bearer <jwt>`).\n- **Developer\
+    \ PAT**: Personal Access Token issued in Host Settings (`Authorization: Bearer\
+    \ mk_live_<hex>`).\n- **Refresh Cookie**: HTTP-only `micup_refresh` cookie used\
+    \ for token rotation.\n- **Cancellation Token**: Cryptographic HMAC token issued\
+    \ on request creation (`?cancel_token=...`).\n- **OpenKJ Key**: Event-scoped integration\
+    \ key (`okj_<event_id>_<secret>`).\n\n### Real-Time Queue Polling\nSinger queue\
+    \ polling uses monotonic conditional requests (`?since={version}`). When the queue\
+    \ has not changed, the server returns **`HTTP 204 No Content`** with zero body\
+    \ bytes."
+  version: 1.0.0
+  contact:
+    name: MicUp.live Support
+    url: https://micup.live/docs
+servers:
+- url: https://micup.live/api/v1
+  description: Production API Server
+- url: http://localhost:8080/api/v1
+  description: Local Development Server
+tags:
+- name: System
+  description: Health and operational status.
+- name: Authentication
+  description: Host account registration, session tokens, and password reset.
+- name: Passkeys
+  description: FIDO2 / WebAuthn biometric passkey registration and login.
+- name: Privacy
+  description: GDPR compliance, data export snapshots, and account deletion.
+- name: Songbooks
+  description: Songbook CRUD and venue association.
+- name: Songs
+  description: Track creation, batch deletion, bulk upsert, and filename parsing.
+- name: Catalog & Manifests
+  description: Static content-addressed catalog shards and overrides.
+- name: Imports
+  description: Background CSV/TSV import jobs and S3 presigned uploads.
+- name: Events
+  description: Live karaoke shows, show codes, pause/resume, and settings.
+- name: Join & Kiosk
+  description: Short show code lookup and constant-time kiosk PIN verification.
+- name: Queue
+  description: Real-time singer queue submissions, status management, and bump reordering.
+- name: API Keys
+  description: Personal Access Tokens for developer integrations.
+- name: OpenKJ
+  description: OpenKJ request-server compatibility protocol adapter.
+paths:
+  /healthz:
+    get:
+      tags:
+      - System
+      summary: Health check
+      responses:
+        '204':
+          description: Service is healthy
+  /auth/register:
+    post:
+      tags:
+      - Authentication
+      summary: Register host account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterRequest'
+      responses:
+        '201':
+          description: User created and logged in
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /auth/login:
+    post:
+      tags:
+      - Authentication
+      summary: Log in with email and password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/refresh:
+    post:
+      tags:
+      - Authentication
+      summary: Refresh session access token
+      responses:
+        '200':
+          description: Session refreshed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/favorites:
+    get:
+      tags:
+      - Authentication
+      summary: Get user favorites
+      description: Returns the authenticated user's account-synced favorite songs and artists.
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: User favorites
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserFavorites'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    put:
+      tags:
+      - Authentication
+      summary: Update user favorites
+      description: Validates, normalizes, deduplicates, and replaces the authenticated user's favorite songs and artists.
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UserFavorites'
+      responses:
+        '200':
+          description: Saved user favorites
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UserFavorites'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+  /auth/me:
+    get:
+      tags:
+      - Authentication
+      summary: Get authenticated user profile
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+    patch:
+      tags:
+      - Authentication
+      summary: Update user profile
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProfileRequest'
+      responses:
+        '200':
+          description: Profile updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+        '409':
+          $ref: '#/components/responses/Conflict'
+    delete:
+      tags:
+      - Privacy
+      summary: Delete account (GDPR erasure)
+      description: |
+        Permanently deletes the authenticated account and all owned resources
+        (sessions, passkeys, developer keys, events, requests, songbooks, import
+        jobs, and unreferenced catalog versions). Shared catalog versions
+        referenced by other accounts are preserved.
+
+        Deletion begins by durably fencing the account (`deleting = true`) and
+        revoking all authentication credentials. If a later cascade step fails,
+        the server returns HTTP 500 with `X-Deletion-Token` and a JSON recovery
+        summary (`step`, `deleting`, `deletion_token`). Retries may authenticate
+        with `X-Deletion-Token` (or `Authorization: Bearer <deletion_token>`)
+        after session/passkey/password credentials have been revoked. Repeated
+        deletion after completion is idempotent (`204 No Content`).
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: X-Deletion-Token
+        in: header
+        required: false
+        description: Scoped deletion recovery token returned by a prior interrupted `DELETE /auth/me` attempt.
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeleteAccountRequest'
+      responses:
+        '204':
+          description: Account and all associated resources permanently deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Cross-account deletion token mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/AccountDeletionIncomplete'
+  /auth/logout:
+    post:
+      tags:
+      - Authentication
+      summary: Log out and revoke sessions
+      security:
+      - BearerAuth: []
+      responses:
+        '204':
+          description: Logged out successfully
+  /auth/me/export:
+    get:
+      tags:
+      - Privacy
+      summary: Export complete personal data snapshot
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Structured JSON archive of all user data
+  /auth/verify-email/request:
+    post:
+      tags:
+      - Authentication
+      summary: Request email verification link
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: Verification link sent
+  /auth/verify-email/confirm:
+    post:
+      tags:
+      - Authentication
+      summary: Confirm email address verification
+      parameters:
+      - name: token
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Email verified successfully
+        '400':
+          $ref: '#/components/responses/BadRequest'
+  /auth/forgot-password:
+    post:
+      tags:
+      - Authentication
+      summary: Request password reset email
+      description: Returns the same neutral response for unknown accounts and delivery failures; HTTP 200 does not certify email delivery.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetRequest'
+      responses:
+        '200':
+          description: Reset email request accepted (neutral message)
+  /auth/reset-password:
+    post:
+      tags:
+      - Authentication
+      summary: Confirm password reset and set new password
+      description: |
+        A reset link expires after one hour. A successful reset atomically replaces
+        the password and invalidates all previously issued reset links and bearer
+        access/refresh sessions for the account. Existing passkeys, developer keys,
+        and OpenKJ credentials remain separate authorities. Concurrent or repeated
+        use of an invalidated link returns 400. A storage failure returns 500;
+        retry may succeed if the first attempt did not commit. After an ambiguous
+        response, a consumed link returns 400; sign in with the new password or
+        request a fresh link. The refresh cookie is cleared on success.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PasswordResetConfirmRequest'
+      responses:
+        '200':
+          description: Password reset completed
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '500':
+          description: Password replacement could not be completed
+  /auth/passkey/register-options:
+    post:
+      tags:
+      - Passkeys
+      summary: Generate WebAuthn registration options
+      responses:
+        '200':
+          description: WebAuthn creation challenge
+  /auth/passkey/register-verify:
+    post:
+      tags:
+      - Passkeys
+      summary: Verify WebAuthn attestation and register passkey
+      responses:
+        '201':
+          description: Passkey registered and session issued
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+  /auth/passkey/login-options:
+    post:
+      tags:
+      - Passkeys
+      summary: Generate WebAuthn login assertion options
+      responses:
+        '200':
+          description: WebAuthn assertion challenge
+  /auth/passkey/login-verify:
+    post:
+      tags:
+      - Passkeys
+      summary: Verify WebAuthn assertion and log in
+      responses:
+        '200':
+          description: Passkey login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TokenResponse'
+        '401':
+          description: The assertion was rejected or the credential is no longer valid for this login.
+        '500':
+          description: Login could not complete because credential storage failed.
+  /auth/passkeys:
+    get:
+      tags:
+      - Passkeys
+      summary: List user passkeys
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: User passkeys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PasskeyInfo'
+  /auth/passkeys/{id}:
+    delete:
+      tags:
+      - Passkeys
+      summary: Delete a registered passkey
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Passkey removed
+  /songbooks:
+    get:
+      tags:
+      - Songbooks
+      summary: List host songbooks
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      responses:
+        '200':
+          description: List of songbooks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  songbooks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Songbook'
+    post:
+      tags:
+      - Songbooks
+      summary: Create a new songbook
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSongbookRequest'
+      responses:
+        '201':
+          description: Songbook created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Songbook'
+  /songbooks/{id}:
+    get:
+      tags:
+      - Songbooks
+      summary: Get songbook details
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Songbook details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Songbook'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+      - Songbooks
+      summary: Update songbook metadata
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Songbook updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Songbook'
+    delete:
+      tags:
+      - Songbooks
+      summary: Delete songbook
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: confirm_detach_token
+        in: query
+        required: false
+        description: Confirmation token returned by a prior 409 foreign_events_associated response to end and detach collaborator shows before deletion.
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Songbook deleted
+        '403':
+          description: Caller is not the songbook owner
+        '409':
+          description: Blocked by owner's own linked event or requires confirmation to end and detach collaborator shows
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForeignEventsAssociatedError'
+  /songbooks/{id}/access:
+    get:
+      tags:
+      - Songbooks
+      summary: List accepted collaborators and pending invitations (owner host session only)
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Access overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SongbookAccessOverview'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Forbidden
+        '404':
+          description: Songbook not found
+  /songbooks/{id}/invitations:
+    post:
+      tags:
+      - Songbooks
+      summary: Create and send a songbook collaboration invitation (owner host session only)
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - email
+              properties:
+                email:
+                  type: string
+                  format: email
+                can_edit_catalog:
+                  type: boolean
+                can_host_shows:
+                  type: boolean
+      responses:
+        '201':
+          description: Invitation created (remains pending if email delivery failed)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation:
+                    $ref: '#/components/schemas/SongbookInvitation'
+                  delivery_failed:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Forbidden
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          description: Rate limit exceeded
+  /songbooks/{id}/invitations/{invitationID}/resend:
+    post:
+      tags:
+      - Songbooks
+      summary: Rotate single-use link and resend pending invitation (owner host session only)
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: invitationID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Invitation resent with a fresh link (previous link invalidated)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  invitation:
+                    $ref: '#/components/schemas/SongbookInvitation'
+                  delivery_failed:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Forbidden
+        '404':
+          description: Invitation not found
+        '410':
+          description: Invitation is no longer pending
+        '429':
+          description: Rate limit exceeded
+  /songbooks/{id}/invitations/{invitationID}:
+    delete:
+      tags:
+      - Songbooks
+      summary: Cancel a pending invitation (owner host session only)
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: invitationID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Invitation canceled
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Forbidden
+        '404':
+          description: Invitation not found
+        '410':
+          description: Invitation is no longer pending
+  /songbooks/{id}/members/{userID}:
+    patch:
+      tags:
+      - Songbooks
+      summary: Update collaborator permissions (owner host session only)
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: userID
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                can_edit_catalog:
+                  type: boolean
+                can_host_shows:
+                  type: boolean
+      responses:
+        '200':
+          description: Grant updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Forbidden
+        '404':
+          description: Member not found
+    delete:
+      tags:
+      - Songbooks
+      summary: Revoke collaborator access (owner host session only)
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: userID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Access revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Forbidden
+        '404':
+          description: Member not found
+  /songbook-invitations/preview:
+    get:
+      tags:
+      - Songbooks
+      summary: Preview a single-use songbook collaboration invitation
+      parameters:
+      - name: token
+        in: query
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Invitation preview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SongbookInvitationPreview'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          description: Invitation not found or invalidated
+        '410':
+          description: Invitation expired or no longer valid
+  /songbook-invitations/accept:
+    post:
+      tags:
+      - Songbooks
+      summary: Accept a single-use songbook collaboration invitation (verified host session required)
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - token
+              properties:
+                token:
+                  type: string
+      responses:
+        '200':
+          description: Invitation accepted and collaborator grant created
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Wrong email, unverified email, or non-host account
+        '404':
+          description: Invitation not found or invalidated
+        '410':
+          description: Invitation expired, canceled, replaced, or already accepted
+  /songbooks/{id}/songs:
+    get:
+      tags:
+      - Songs
+      summary: List songs in songbook
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: q
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: List of songs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Song'
+    post:
+      tags:
+      - Songs
+      summary: Add single song
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateSongRequest'
+      responses:
+        '201':
+          description: Song added
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Song'
+  /songbooks/{id}/songs/{songID}:
+    get:
+      tags:
+      - Songs
+      summary: Get a managed song with host-only metadata (including original file location)
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: songID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Song details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Song'
+        '401':
+          description: Unauthorized
+        '403':
+          description: Forbidden
+        '404':
+          description: Song not found
+    patch:
+      tags:
+      - Songs
+      summary: Update a song
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: songID
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSongRequest'
+      responses:
+        '200':
+          description: Song updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Song'
+    delete:
+      tags:
+      - Songs
+      summary: Delete a song
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: songID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Song deleted
+  /songbooks/{id}/songs/batch-delete:
+    post:
+      tags:
+      - Songs
+      summary: Batch delete songs
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Songs deleted
+  /songbooks/{id}/songs/clear:
+    post:
+      tags:
+      - Songs
+      summary: Clear all songs in songbook
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: All songs removed
+  /songbooks/{id}/parse-files:
+    post:
+      tags:
+      - Songs
+      summary: Parse filename list into track candidates
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ParseFilesRequest'
+      responses:
+        '200':
+          description: Parsed track candidates
+  /songbooks/{id}/managed-manifest:
+    get:
+      tags:
+      - Catalog & Manifests
+      summary: Get managed catalog manifest (Host)
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Managed manifest
+  /songbooks/{id}/catalog-overrides:
+    get:
+      tags:
+      - Catalog & Manifests
+      summary: Get catalog overrides (Host)
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: List of catalog overrides
+  /songbooks/{id}/public-manifest:
+    get:
+      tags:
+      - Catalog & Manifests
+      summary: Get public catalog manifest for singer app
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: code
+        in: query
+        required: false
+        description: Active event join code to view a private songbook during an active event
+        schema:
+          type: string
+      - name: event
+        in: query
+        required: false
+        description: Active event ID to view a private songbook during an active event
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Public manifest
+  /songbooks/{id}/public-overrides:
+    get:
+      tags:
+      - Catalog & Manifests
+      summary: Get public overrides for singer app
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: code
+        in: query
+        required: false
+        description: Active event join code to view a private songbook during an active event
+        schema:
+          type: string
+      - name: event
+        in: query
+        required: false
+        description: Active event ID to view a private songbook during an active event
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Public overrides
+  /songbooks/{id}/import-jobs:
+    post:
+      tags:
+      - Imports
+      summary: Create background import job
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '201':
+          description: Import job created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
+  /songbooks/{id}/import-uploads:
+    post:
+      tags:
+      - Imports
+      summary: Create presigned S3 upload URL for large catalog files
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Presigned upload URL
+  /songbooks/{id}/import-jobs/{jobID}/complete:
+    post:
+      tags:
+      - Imports
+      summary: Notify upload completion and trigger ingestion
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: jobID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Job enqueued for worker
+  /songbooks/{id}/import-jobs/{jobID}:
+    get:
+      tags:
+      - Imports
+      summary: Get import job progress
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: jobID
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Import job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
+  /songbooks/{id}/import-jobs/latest:
+    get:
+      tags:
+      - Imports
+      summary: Get latest import job for songbook
+      security:
+      - BearerAuth: []
+      - DeveloperKeyAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Latest import job
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ImportJob'
+  /events:
+    get:
+      tags:
+      - Events
+      summary: List host events
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      responses:
+        '200':
+          description: List of events
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - events
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Event'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+    post:
+      tags:
+      - Events
+      summary: Create an event
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateEventRequest'
+      responses:
+        '201':
+          description: Event created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+  /events/{id}:
+    get:
+      tags:
+      - Events
+      summary: Get event details (Host view)
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Event details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+      - Events
+      summary: Update event settings
+      description: |
+        The server loads the current event and conditionally commits the supplied
+        fields. A concurrent queue or event-metadata change returns 409 without
+        applying this update; reload event/queue state before resubmitting the
+        intended fields. Unrelated fields from an older server snapshot cannot
+        overwrite newer lifecycle, rotation, retention, or integration-key state.
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Event updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+        '409':
+          $ref: '#/components/responses/EventMutationConflict'
+    delete:
+      tags:
+      - Events
+      summary: Delete event
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Event deleted
+  /events/{id}/pause:
+    post:
+      tags:
+      - Events
+      summary: Pause singer requests
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Event paused successfully
+        '409':
+          $ref: '#/components/responses/EventMutationConflict'
+
+  /events/{id}/resume:
+    post:
+      tags:
+      - Events
+      summary: Resume singer requests
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Event resumed successfully
+        '409':
+          $ref: '#/components/responses/EventMutationConflict'
+
+  /events/{id}/restart:
+    post:
+      tags:
+      - Events
+      summary: Restart event and archive queue
+      description: A restart without clearing the queue conditionally commits its event snapshot; a stale snapshot returns 409. Clearing restarts retain their bounded, resumable archival workflow.
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Event restarted and queue cleared
+        '409':
+          $ref: '#/components/responses/EventMutationConflict'
+
+  /events/{id}/openkj-key/rotate:
+    post:
+      tags:
+      - Events
+      summary: Rotate OpenKJ integration secret key
+      description: Key rotation changes private event metadata without advancing the public queue version. A concurrent event/queue change can reject the rotation with 409.
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: New OpenKJ key generated
+        '409':
+          $ref: '#/components/responses/EventMutationConflict'
+
+  /join/{code}:
+    get:
+      tags:
+      - Join & Kiosk
+      summary: Resolve show code (Join code)
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Public event resolved
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /events/{id}/public:
+    get:
+      tags:
+      - Join & Kiosk
+      summary: Get sanitized public event info
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Public event details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Event'
+  /events/{id}/kiosk/verify-pin:
+    post:
+      tags:
+      - Join & Kiosk
+      summary: Verify host PIN to exit walk-up kiosk
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyPinRequest'
+      responses:
+        '200':
+          description: PIN is valid
+        '401':
+          description: Invalid PIN
+        '403':
+          description: PIN not configured by host
+  /events/{id}/queue:
+    get:
+      tags:
+      - Queue
+      summary: Poll live queue (conditional)
+      description: Returns 204 No Content with zero bytes if queue_version == since.
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: since
+        in: query
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Queue has updates
+          headers:
+            X-Queue-Version:
+              description: Monotonic queue version for this snapshot
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QueueResponse'
+        '204':
+          description: No updates since specified version
+          headers:
+            X-Queue-Version:
+              description: Current queue version
+              schema:
+                type: integer
+  /events/{id}/requests:
+    get:
+      tags:
+      - Queue
+      summary: Get queue requests (Host view)
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: since
+        in: query
+        description: Return 204 when this queue version is still current.
+        schema:
+          type: integer
+      responses:
+        '200':
+          description: Complete host queue snapshot
+          headers:
+            X-Queue-Version:
+              description: Monotonic queue version for this snapshot
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HostQueueResponse'
+        '204':
+          description: No updates since the requested queue version
+          headers:
+            X-Queue-Version:
+              description: Current queue version
+              schema:
+                type: integer
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+    post:
+      tags:
+      - Queue
+      summary: Submit singer request
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitRequest'
+      responses:
+        '201':
+          description: Request submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Request'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Max active limit reached, show paused, or admission changed during retries
+  /events/{id}/requests/{rid}:
+    get:
+      tags:
+      - Queue
+      summary: Get single request status
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: rid
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: cancel_token
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Request details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Request'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags:
+      - Queue
+      summary: Update request status
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: rid
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Optional UUID retained across retries of this mutation.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateStatusRequest'
+      responses:
+        '200':
+          description: Request updated
+          headers:
+            X-Queue-Version:
+              description: Queue version after this conditional mutation.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Request'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '409':
+          $ref: '#/components/responses/QueueMutationConflict'
+    delete:
+      tags:
+      - Queue
+      summary: Cancel request
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: rid
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: cancel_token
+        in: query
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Request cancelled
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Valid cancellation token or host ownership required
+        '404':
+          description: Request not found in the event; repeated deletion also returns 404
+        '500':
+          description: Request lookup or deletion failed
+  /events/{id}/requests/reorder:
+    post:
+      tags:
+      - Queue
+      summary: Reorder queue requests
+      security:
+      - DeveloperKeyAuth: []
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: Idempotency-Key
+        in: header
+        description: Optional UUID retained across retries of this mutation.
+        schema:
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReorderRequests'
+      responses:
+        '200':
+          description: Queue reordered successfully
+          headers:
+            X-Queue-Version:
+              description: Queue version after this conditional mutation.
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - status
+                properties:
+                  status:
+                    type: string
+                    example: ok
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '409':
+          $ref: '#/components/responses/QueueMutationConflict'
+  /api-keys:
+    get:
+      tags:
+      - API Keys
+      summary: List API keys
+      security:
+      - BearerAuth: []
+      responses:
+        '200':
+          description: List of developer keys
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DeveloperKey'
+    post:
+      tags:
+      - API Keys
+      summary: Create an API key
+      security:
+      - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateKeyRequest'
+      responses:
+        '201':
+          description: Key created successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KeyResponse'
+  /api-keys/{id}:
+    delete:
+      tags:
+      - API Keys
+      summary: Revoke an API key
+      security:
+      - BearerAuth: []
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '204':
+          description: Key revoked successfully
+  /openkj/api.php:
+    get:
+      tags:
+      - OpenKJ
+      summary: OpenKJ Protocol Dispatcher (GET)
+      security:
+      - OpenKJKeyAuth: []
+      parameters:
+      - name: action
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - getvenues
+          - getserial
+          - setaccepting
+          - getrequests
+          - deleterequest
+          - clearrequests
+      - name: key
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OpenKJ protocol response
+    post:
+      tags:
+      - OpenKJ
+      summary: OpenKJ Protocol Dispatcher (POST)
+      security:
+      - OpenKJKeyAuth: []
+      parameters:
+      - name: action
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - addsongs
+          - cleardatabase
+          - setaccepting
+          - getrequests
+          - deleterequest
+          - clearrequests
+      - name: key
+        in: query
+        schema:
+          type: string
+      responses:
+        '200':
+          description: OpenKJ protocol response
+        '500':
+          description: OpenKJ mutation failed
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Session JWT obtained via /auth/login or /auth/passkey/login-verify.
+    DeveloperKeyAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: mk_live_[hex]
+      description: 'Personal Access Token generated in KJ Host Settings (Authorization:
+        Bearer mk_live_...).'
+    CancelTokenAuth:
+      type: apiKey
+      in: query
+      name: cancel_token
+      description: Cryptographic HMAC-SHA256 token issued on song request creation.
+    OpenKJKeyAuth:
+      type: apiKey
+      in: query
+      name: key
+      description: Event-scoped integration key in format okj_<event_id>_<secret>.
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          example: usr_01h8bc4a9
+        email:
+          type: string
+          format: email
+          example: host@venue.com
+        display_name:
+          type: string
+          example: KJ Dave
+        is_host:
+          type: boolean
+          example: true
+        email_verified:
+          type: boolean
+          example: true
+        avatar_url:
+          type: string
+          nullable: true
+          example: https://...
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        favorite_songs:
+          type: array
+          items:
+            $ref: '#/components/schemas/FavoriteSong'
+        favorite_artists:
+          type: array
+          items:
+            $ref: '#/components/schemas/FavoriteArtist'
+    FavoriteSong:
+      type: object
+      required:
+      - artist
+      - title
+      - preferred_key
+      - added_at
+      properties:
+        artist:
+          type: string
+          example: Queen
+        title:
+          type: string
+          example: Bohemian Rhapsody
+        preferred_key:
+          type: integer
+          minimum: -6
+          maximum: 6
+          default: 0
+          example: 0
+        canonical_id:
+          type: string
+          example: c1a2b3
+        added_at:
+          type: integer
+          format: int64
+          description: Timestamp in milliseconds since Unix epoch
+          example: 1700000000000
+    FavoriteArtist:
+      type: object
+      required:
+      - name
+      - added_at
+      properties:
+        name:
+          type: string
+          example: Queen
+        added_at:
+          type: integer
+          format: int64
+          description: Timestamp in milliseconds since Unix epoch
+          example: 1700000000000
+    UserFavorites:
+      type: object
+      required:
+      - songs
+      - artists
+      properties:
+        songs:
+          type: array
+          items:
+            $ref: '#/components/schemas/FavoriteSong'
+        artists:
+          type: array
+          items:
+            $ref: '#/components/schemas/FavoriteArtist'
+    RegisterRequest:
+      type: object
+      required:
+      - email
+      - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: host@venue.com
+        password:
+          type: string
+          minLength: 8
+          example: correct-horse-battery-staple
+        display_name:
+          type: string
+          example: KJ Dave
+        is_host:
+          type: boolean
+          default: true
+    LoginRequest:
+      type: object
+      required:
+      - email
+      - password
+      properties:
+        email:
+          type: string
+          format: email
+          example: host@venue.com
+        password:
+          type: string
+          example: secret123
+    TokenResponse:
+      type: object
+      properties:
+        access_token:
+          type: string
+          example: eyJhbGciOi...
+        user:
+          $ref: '#/components/schemas/User'
+    UpdateProfileRequest:
+      type: object
+      properties:
+        display_name:
+          type: string
+          example: Dave The Wave
+        email:
+          type: string
+          format: email
+          example: new@venue.com
+        avatar_url:
+          type: string
+          example: https://...
+        is_host:
+          type: boolean
+        password:
+          type: string
+          minLength: 8
+    PasswordResetRequest:
+      type: object
+      required:
+      - email
+      properties:
+        email:
+          type: string
+          format: email
+          example: host@venue.com
+    PasswordResetConfirmRequest:
+      type: object
+      required:
+      - token
+      - password
+      properties:
+        token:
+          type: string
+          example: hmac_token_here
+        password:
+          type: string
+          minLength: 8
+          example: newpassword123
+    PasskeyInfo:
+      type: object
+      properties:
+        id:
+          type: string
+          example: cred_01h8x9
+        friendly_name:
+          type: string
+          example: MacBook Touch ID
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+    Songbook:
+      type: object
+      properties:
+        id:
+          type: string
+          example: sb_01h891ab3
+        public_id:
+          type: string
+          example: pub_01h891ab3
+        owner_id:
+          type: string
+          example: usr_01h8bc4a9
+        venue_id:
+          type: string
+          example: ven_123
+        name:
+          type: string
+          example: The Dubliner Main Catalog
+        is_public:
+          type: boolean
+          example: true
+        song_count:
+          type: integer
+          example: 4500
+        catalog_version_id:
+          type: string
+          nullable: true
+          example: cat_01h9x
+        owner_display_name:
+          type: string
+        permissions:
+          $ref: '#/components/schemas/SongbookPermissions'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SongbookPermissions:
+      type: object
+      properties:
+        is_owner:
+          type: boolean
+        can_edit_catalog:
+          type: boolean
+        can_host_shows:
+          type: boolean
+        can_manage_book:
+          type: boolean
+        can_manage_access:
+          type: boolean
+    SongbookMember:
+      type: object
+      properties:
+        user_id:
+          type: string
+        email:
+          type: string
+          format: email
+        display_name:
+          type: string
+        can_edit_catalog:
+          type: boolean
+        can_host_shows:
+          type: boolean
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SongbookInvitation:
+      type: object
+      properties:
+        id:
+          type: string
+        songbook_id:
+          type: string
+        recipient_email:
+          type: string
+          format: email
+        can_edit_catalog:
+          type: boolean
+        can_host_shows:
+          type: boolean
+        status:
+          type: string
+          enum:
+          - pending
+          - accepted
+          - canceled
+          - replaced
+        expires_at:
+          type: string
+          format: date-time
+        last_sent_at:
+          type: string
+          format: date-time
+        send_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    SongbookAccessOverview:
+      type: object
+      properties:
+        members:
+          type: array
+          items:
+            $ref: '#/components/schemas/SongbookMember'
+        invitations:
+          type: array
+          items:
+            $ref: '#/components/schemas/SongbookInvitation'
+    SongbookInvitationPreview:
+      type: object
+      properties:
+        songbook_id:
+          type: string
+        songbook_name:
+          type: string
+        inviter_name:
+          type: string
+        recipient_email:
+          type: string
+          format: email
+        can_edit_catalog:
+          type: boolean
+        can_host_shows:
+          type: boolean
+        status:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        expired:
+          type: boolean
+        authenticated:
+          type: boolean
+        email_matches:
+          type: boolean
+        email_verified:
+          type: boolean
+        is_host:
+          type: boolean
+    ForeignEventsAssociatedError:
+      type: object
+      properties:
+        error:
+          type: string
+          example: foreign_events_associated
+        message:
+          type: string
+        affected_shows_count:
+          type: integer
+        active_shows_count:
+          type: integer
+        confirmation_token:
+          type: string
+    CreateSongbookRequest:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          example: Friday Night Songbook
+        venue_id:
+          type: string
+          example: ven_456
+        is_public:
+          type: boolean
+          default: true
+    Song:
+      type: object
+      properties:
+        id:
+          type: string
+          example: s_01h9x82
+        songbook_id:
+          type: string
+          example: sb_01h891ab3
+        title:
+          type: string
+          example: Bohemian Rhapsody
+        artist:
+          type: string
+          example: Queen
+        genre:
+          type: string
+          nullable: true
+          example: Rock
+        key:
+          type: string
+          nullable: true
+          example: Bb
+        disc:
+          type: string
+          nullable: true
+          example: SC8112
+        source:
+          type: string
+          nullable: true
+          description: Backing track publisher or provider (e.g. Sound Choice, Sunfly, KaraFun).
+          example: Sound Choice
+        location:
+          type: string
+          nullable: true
+          description: Host-only original imported file path or filename (never exposed on public catalog endpoints).
+          example: Karaoke/Rock/SC8112-01 - Queen - Bohemian Rhapsody.zip
+        video_url:
+          type: string
+          nullable: true
+          description: Optional public backing-track video URL (e.g. YouTube).
+          example: https://youtu.be/fJ9rUzIMcZQ
+        canonical_id:
+          type: string
+          nullable: true
+          example: can_0123456789abcdef
+        is_custom:
+          type: boolean
+          example: false
+        is_available:
+          type: boolean
+          example: true
+        search_text:
+          type: string
+          example: queen bohemian rhapsody
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    CreateSongRequest:
+      type: object
+      required:
+      - title
+      - artist
+      properties:
+        title:
+          type: string
+          example: Bohemian Rhapsody
+        artist:
+          type: string
+          example: Queen
+        genre:
+          type: string
+          example: Classic Rock
+        key:
+          type: string
+          example: Bb
+        disc:
+          type: string
+          example: SC8112
+        source:
+          type: string
+          description: Backing track publisher or provider (e.g. Sound Choice, Sunfly, KaraFun).
+          example: Sound Choice
+        location:
+          type: string
+          description: Optional host-only original file path or filename.
+        video_url:
+          type: string
+          description: Optional public backing-track video URL.
+          example: https://youtu.be/fJ9rUzIMcZQ
+    UpdateSongRequest:
+      type: object
+      properties:
+        title:
+          type: string
+        artist:
+          type: string
+        genre:
+          type: string
+        disc:
+          type: string
+        source:
+          type: string
+        location:
+          type: string
+        video_url:
+          type: string
+        is_available:
+          type: boolean
+    ParseFilesRequest:
+      type: object
+      required:
+      - files
+      properties:
+        files:
+          type: array
+          items:
+            type: string
+          example:
+          - Queen - Bohemian Rhapsody (SC8112).mp3
+          - ABBA - Dancing Queen.zip
+    ImportJob:
+      type: object
+      properties:
+        id:
+          type: string
+          example: job_01h98ab2
+        songbook_id:
+          type: string
+          example: sb_01h891ab3
+        status:
+          type: string
+          enum:
+          - pending
+          - queued
+          - processing
+          - completed
+          - failed
+          example: completed
+        manifest_key:
+          type: string
+          example: imports/job_01h98ab2.csv
+        prune_missing:
+          type: boolean
+          example: false
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    Event:
+      type: object
+      properties:
+        id:
+          type: string
+          example: evt_01h7x89q3m4k
+        songbook_id:
+          type: string
+          example: sb_01h891ab3
+        detached_songbook_name:
+          type: string
+        name:
+          type: string
+          example: Friday Night Live Karaoke
+        venue_name:
+          type: string
+          example: The Dubliner
+        join_code:
+          type: string
+          example: DUBLIN
+        status:
+          type: string
+          enum:
+          - active
+          - paused
+          - ended
+          example: active
+        recurring:
+          type: boolean
+          example: false
+        tip_url:
+          type: string
+          example: https://venmo.com/kjdave
+        announcement:
+          type: string
+          example: Welcome to Friday Night Karaoke!
+        rotation_mode:
+          type: string
+          enum:
+          - fair_priority
+          - round_robin
+          - fcfs
+          - manual
+          example: round_robin
+        max_active_per_singer:
+          type: integer
+          example: 1
+        submission_delay:
+          type: integer
+          example: 60
+        auto_accept:
+          type: boolean
+          example: true
+        allow_key_change:
+          type: boolean
+          example: true
+        allow_write_ins:
+          type: boolean
+          example: false
+        current_round:
+          type: integer
+          example: 1
+        singer_weights:
+          type: object
+          description: Private host-only per-singer fair_priority adjustments clamped to [-10, +10], keyed by normalized singer name. Never exposed on public endpoints.
+          additionalProperties:
+            type: integer
+            minimum: -10
+            maximum: 10
+          example:
+            alice: 3
+            bob: -4
+        kiosk_pin:
+          type: string
+          example: '1234'
+        openkj_key:
+          type: string
+          example: okj_evt_01h7x89q3m4k_a1b2c3d4
+        queue_version:
+          type: integer
+          example: 43
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        ended_at:
+          type: string
+          format: date-time
+          nullable: true
+    CreateEventRequest:
+      type: object
+      required:
+      - songbook_id
+      properties:
+        songbook_id:
+          type: string
+          example: sb_01h891ab3
+        detached_songbook_name:
+          type: string
+        name:
+          type: string
+          example: Friday Night Live Karaoke
+        venue_name:
+          type: string
+          example: The Dubliner
+        join_code:
+          type: string
+          example: DUBLIN
+        rotation_mode:
+          type: string
+          enum:
+          - fair_priority
+          - round_robin
+          - fcfs
+          - manual
+          default: round_robin
+          example: round_robin
+        max_active_per_singer:
+          type: integer
+          default: 1
+        submission_delay:
+          type: integer
+          default: 60
+        auto_accept:
+          type: boolean
+          default: true
+        allow_write_ins:
+          type: boolean
+          default: false
+        kiosk_pin:
+          type: string
+          default: '1234'
+    Request:
+      type: object
+      properties:
+        id:
+          type: string
+          example: req_01h9a2c3f4
+        event_id:
+          type: string
+          example: evt_01h7x89q3m4k
+        songbook_id:
+          type: string
+          example: sb_01h891ab3
+        singer_name:
+          type: string
+          example: Alice
+        song_title:
+          type: string
+          example: Bohemian Rhapsody
+        song_artist:
+          type: string
+          example: Queen
+        is_write_in:
+          type: boolean
+          example: false
+        song_id:
+          type: string
+          nullable: true
+          example: s_01h9x82
+        key_change:
+          type: integer
+          nullable: true
+          example: -2
+        notes:
+          type: string
+          nullable: true
+          example: Singing with Sarah!
+        status:
+          type: string
+          enum:
+          - pending
+          - accepted
+          - up_next
+          - completed
+          - rejected
+          - cancelled
+          example: up_next
+        rank:
+          type: integer
+          example: 1
+        round:
+          type: integer
+          example: 1
+        singer_turn:
+          type: integer
+          example: 1
+        decline_reason:
+          type: string
+          nullable: true
+          example: Host break
+        cancel_token:
+          type: string
+          nullable: true
+          example: eyJyIjoiLi4uIn0.sig
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+          nullable: true
+    SubmitRequest:
+      type: object
+      required:
+      - singer_name
+      - song_title
+      - song_artist
+      properties:
+        singer_name:
+          type: string
+          example: Alice
+        song_title:
+          type: string
+          example: Bohemian Rhapsody
+        song_artist:
+          type: string
+          example: Queen
+        is_write_in:
+          type: boolean
+          example: false
+        song_id:
+          type: string
+          example: s_01h9x82
+        key_change:
+          type: integer
+          example: -1
+        notes:
+          type: string
+          example: Announce Sarah's birthday!
+    QueueResponse:
+      type: object
+      required:
+      - event_id
+      - event_name
+      - event_status
+      - current_round
+      - queue_version
+      - queue
+      properties:
+        event_id:
+          type: string
+          example: evt_01h7x89q3m4k
+        event_name:
+          type: string
+          example: Friday Night Live Karaoke
+        venue_name:
+          type: string
+          example: The Dubliner
+        join_code:
+          type: string
+          example: DUBLIN
+        event_status:
+          type: string
+          enum:
+          - active
+          - paused
+          - ended
+          example: active
+        songbook_id:
+          type: string
+          example: sb_01h891ab3
+        tip_url:
+          type: string
+          example: https://venmo.com/kjdave
+        announcement:
+          type: string
+          example: Welcome singers!
+        rotation_mode:
+          type: string
+          enum:
+          - fair_priority
+          - round_robin
+          - fcfs
+          - manual
+          example: round_robin
+        auto_accept:
+          type: boolean
+          example: false
+        submission_delay:
+          type: integer
+          example: 60
+        current_round:
+          type: integer
+          example: 1
+        queue_version:
+          type: integer
+          example: 43
+        queue:
+          type: array
+          items:
+            $ref: '#/components/schemas/Request'
+    HostQueueResponse:
+      type: object
+      required:
+      - requests
+      - current_round
+      - queue_version
+      properties:
+        requests:
+          type: array
+          items:
+            $ref: '#/components/schemas/Request'
+        current_round:
+          type: integer
+          example: 1
+        queue_version:
+          type: integer
+          example: 43
+    UpdateStatusRequest:
+      type: object
+      properties:
+        status:
+          type: string
+          enum:
+          - pending
+          - accepted
+          - up_next
+          - completed
+          - rejected
+          - cancelled
+          - playing
+          - declined
+          description: Compatibility input aliases; responses use canonical statuses only.
+          example: up_next
+        rank:
+          type: integer
+          example: 1
+        round:
+          type: integer
+          example: 1
+        song_title:
+          type: string
+          example: Somebody to Love
+        song_artist:
+          type: string
+          example: Queen
+        is_write_in:
+          type: boolean
+          example: false
+        singer_name:
+          type: string
+          example: Sara
+        song_id:
+          type: string
+          example: song_123
+        key_change:
+          type: integer
+          minimum: -6
+          maximum: 6
+          example: 1
+        notes:
+          type: string
+          example: Birthday shoutout
+        decline_reason:
+          type: string
+          example: Track unavailable tonight
+        expected_queue_version:
+          type: integer
+          minimum: 0
+          description: Optional optimistic-concurrency precondition for this event queue mutation.
+    ReorderRequests:
+      type: object
+      required:
+      - order
+      properties:
+        order:
+          type: array
+          items:
+            type: string
+          example:
+          - req_2
+          - req_1
+          - req_3
+        expected_queue_version:
+          type: integer
+          minimum: 0
+          description: Optional optimistic-concurrency precondition. Empty orders are no-ops.
+    VerifyPinRequest:
+      type: object
+      required:
+      - pin
+      properties:
+        pin:
+          type: string
+          example: '1234'
+    DeveloperKey:
+      type: object
+      properties:
+        id:
+          type: string
+          example: key_48a1c90df2
+        name:
+          type: string
+          example: Stage Playback Deck 1
+        key_prefix:
+          type: string
+          example: mk_live_a1b2c3d4...
+        owner_id:
+          type: string
+          example: usr_01h8bc4a9
+        scopes:
+          type: array
+          items:
+            type: string
+            enum:
+            - events:read
+            - events:write
+            - requests:read
+            - requests:write
+            - catalogs:write
+          description: Route scopes. Pre-A6 records without a scope-version marker are grandfathered with full access.
+          example:
+          - events:read
+          - requests:write
+        created_at:
+          type: string
+          format: date-time
+        last_used_at:
+          type: string
+          format: date-time
+          nullable: true
+        revoked_at:
+          type: string
+          format: date-time
+          nullable: true
+    CreateKeyRequest:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          example: Host Playback Controller
+        scopes:
+          type: array
+          items:
+            type: string
+            enum:
+            - events:read
+            - events:write
+            - requests:read
+            - requests:write
+            - catalogs:write
+          description: Optional route scopes; omitted or empty defaults to the full host integration set.
+          example:
+          - events:read
+          - requests:write
+        expires_in_days:
+          type: integer
+          example: 90
+    KeyResponse:
+      allOf:
+      - $ref: '#/components/schemas/DeveloperKey'
+      - type: object
+        properties:
+          raw_key:
+            type: string
+            example: mk_live_4f9a72b8c0e123456789abcdef012345
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+          example: invalid request payload
+        code:
+          type: string
+          example: validation_error
+    InsufficientScope:
+      type: object
+      required:
+      - error
+      - detail
+      - required_scope
+      properties:
+        error:
+          type: string
+          example: insufficient_scope
+        detail:
+          type: string
+          example: developer key does not include the required scope
+        required_scope:
+          type: string
+          enum:
+          - events:read
+          - events:write
+          - requests:read
+          - requests:write
+          - catalogs:write
+          example: requests:write
+    QueueVersionConflict:
+      type: object
+      required:
+      - error
+      - expected_queue_version
+      - current_queue_version
+      properties:
+        error:
+          type: string
+          example: queue_version_conflict
+        expected_queue_version:
+          type: integer
+        current_queue_version:
+          type: integer
+        queue_version:
+          type: integer
+          description: Compatibility alias for current_queue_version.
+    IdempotencyConflict:
+      type: object
+      required:
+      - error
+      properties:
+        error:
+          type: string
+          example: idempotency_key_conflict
+    DeleteAccountRequest:
+      type: object
+      required:
+      - confirm
+      properties:
+        confirm:
+          type: string
+          enum:
+          - DELETE
+          example: DELETE
+    AccountDeletionPartialFailure:
+      type: object
+      required:
+      - detail
+      - step
+      - deleting
+      properties:
+        detail:
+          type: string
+          example: account deletion incomplete; retry to finish cleanup
+        step:
+          type: string
+          description: Cascade boundary where deletion paused.
+          example: purge_catalog_version
+        deleting:
+          type: boolean
+          example: true
+        deletion_token:
+          type: string
+          description: Scoped JWT recovery token authorizing retry of DELETE /auth/me for this account.
+  responses:
+    BadRequest:
+      description: Invalid request parameters or payload
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authentication token
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InsufficientScope:
+      description: Developer key lacks the required route scope
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/InsufficientScope'
+    NotFound:
+      description: Requested resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Resource conflict (e.g. email already registered, max active singer
+        limit reached)
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    AccountDeletionIncomplete:
+      description: |
+        Account deletion began and revoked credentials, but a downstream cleanup
+        step failed. Retry DELETE /auth/me with the returned X-Deletion-Token
+        (or wait for background/operator recovery) to complete cleanup.
+      headers:
+        X-Deletion-Token:
+          description: Scoped JWT recovery token for retrying DELETE /auth/me.
+          schema:
+            type: string
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AccountDeletionPartialFailure'
+    EventMutationConflict:
+      description: |
+        The server's event snapshot became stale or restart fenced the update.
+        This attempt did not commit its event settings/key or rotation plan.
+        Reload the event and queue, then resubmit the intended fields. The error
+        uses queue_version_conflict and includes the server snapshot's expected
+        and current queue versions. These versions can be equal when private
+        metadata changed without a public queue bump; matching queue versions
+        alone are not a reason to replay the obsolete plan. The metadata version
+        is internal and is not a client precondition. This response does not add
+        idempotency support to event settings, status, restart, or key rotation.
+      headers:
+        X-Queue-Version:
+          description: Current public queue version; reload event state before retrying.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/QueueVersionConflict'
+    QueueMutationConflict:
+      description: The queue was stale or the idempotency key was reused for a different mutation; no mutation was applied.
+      headers:
+        X-Queue-Version:
+          description: Current queue version to use for a retry, when available.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            oneOf:
+            - $ref: '#/components/schemas/QueueVersionConflict'
+            - $ref: '#/components/schemas/IdempotencyConflict'

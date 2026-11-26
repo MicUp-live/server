@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# A new push to a PR supersedes its previous verification run. Deployment has a
+# separate concurrency group and is never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Verify application
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
+      - name: Run application checks
+        run: mise run ci:verify
+
+  conventional-commits:
+    name: Validate conventional commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: jdx/mise-action@v3
+      - name: Check pull request commit range
+        if: github.event_name == 'pull_request'
+        run: mise run release:check -- ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+      - name: Check main branch history
+        if: github.event_name == 'push'
+        run: mise run release:check -- ${{ github.event.before }}..${{ github.sha }}
+
+  infrastructure:
+    name: Validate infrastructure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v3
+      - name: Validate OpenTofu configuration (no cloud credentials)
+        run: mise run ci:infra:validate
+
+  plan:
+    name: Plan infrastructure
+    # Same-repository pull requests only. Fork and Dependabot PRs get no OIDC
+    # token, so they are skipped rather than failed.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.actor != 'dependabot[bot]'
+    needs: infrastructure
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v3
+      - uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.AWS_PLAN_ROLE_ARN }}
+          aws-region: us-east-2
+      - name: Preview production plan (read-only, no lock)
+        run: mise run ci:infra:plan

@@ -1,0 +1,29 @@
+{
+  "version": "2.0",
+  "routeKey": "GET /api/v1/healthz",
+  "rawPath": "/api/v1/healthz",
+  "rawQueryString": "",
+  "headers": {
+    "host": "localhost",
+    "user-agent": "sam-local"
+  },
+  "requestContext": {
+    "accountId": "000000000000",
+    "apiId": "local",
+    "domainName": "localhost",
+    "domainPrefix": "local",
+    "http": {
+      "method": "GET",
+      "path": "/api/v1/healthz",
+      "protocol": "HTTP/1.1",
+      "sourceIp": "127.0.0.1",
+      "userAgent": "sam-local"
+    },
+    "requestId": "local-health-check",
+    "routeKey": "GET /api/v1/healthz",
+    "stage": "$default",
+    "time": "13/Sep/2026:00:00:00 +0000",
+    "timeEpoch": 1789257600000
+  },
+  "isBase64Encoded": false
+}

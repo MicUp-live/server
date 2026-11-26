@@ -1,0 +1,34 @@
+types:
+  - type: feat
+    increment: Minor
+    section: Features
+  - type: fix
+    increment: Patch
+    section: Fixes
+  - type: security
+    increment: Patch
+    section: Security
+  - type: build
+    increment: None
+    hidden: true
+  - type: chore
+    increment: None
+    hidden: true
+  - type: ci
+    increment: None
+    hidden: true
+  - type: docs
+    increment: None
+    hidden: true
+  - type: perf
+    increment: Patch
+    section: Performance
+  - type: refactor
+    increment: None
+    hidden: true
+  - type: style
+    increment: None
+    hidden: true
+  - type: test
+    increment: None
+    hidden: true

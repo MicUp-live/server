@@ -1,0 +1,155 @@
+{
+  "contract_id": "C03",
+  "description": "GET /api/v1/events/{id}/requests host queue 200 snapshot covering all 6 canonical statuses, omitted optional song_id/notes/decline_reason, RFC3339 timestamps, X-Queue-Version header, and unknown future fields",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/events/evt_contract_01/requests",
+    "required_scope": "requests:read",
+    "headers": {
+      "Authorization": "Bearer mk_live_contract_requests_read"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json",
+      "X-Queue-Version": "7"
+    },
+    "body": {
+      "requests": [
+        {
+          "id": "req_contract_01",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_id": "s_01h9x82",
+          "song_title": "Bohemian Rhapsody",
+          "song_artist": "Queen",
+          "singer_name": "Alice",
+          "key_change": 0,
+          "notes": "Start on the piano cue",
+          "status": "up_next",
+          "rank": 1,
+          "round": 1,
+          "singer_turn": 1,
+          "cancel_token": "tok_req_contract_01",
+          "created_at": "2026-10-16T20:05:00Z",
+          "updated_at": "2026-10-16T20:10:00Z"
+        },
+        {
+          "id": "req_contract_05",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_id": "s_01h9x77",
+          "song_title": "Tequila",
+          "song_artist": "The Champs",
+          "singer_name": "Evan",
+          "key_change": 0,
+          "status": "rejected",
+          "rank": 1760645220005,
+          "round": 1,
+          "singer_turn": 1,
+          "decline_reason": "Track unavailable tonight",
+          "cancel_token": "tok_req_contract_05",
+          "created_at": "2026-10-16T20:07:00Z",
+          "updated_at": "2026-10-16T20:09:00Z"
+        },
+        {
+          "id": "req_contract_06",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_title": "Wonderwall",
+          "song_artist": "Oasis",
+          "singer_name": "Fiona",
+          "key_change": -2,
+          "status": "cancelled",
+          "rank": 1760645280006,
+          "round": 1,
+          "singer_turn": 1,
+          "cancel_token": "tok_req_contract_06",
+          "created_at": "2026-10-16T20:08:00Z",
+          "updated_at": "2026-10-16T20:12:00Z"
+        },
+        {
+          "id": "req_contract_03",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_id": "s_01h9x99",
+          "song_title": "Shallow",
+          "song_artist": "Lady Gaga & Bradley Cooper",
+          "singer_name": "Charlie",
+          "key_change": 2,
+          "notes": "Need two wireless mics",
+          "status": "pending",
+          "rank": 1760645460003,
+          "round": 1,
+          "singer_turn": 1,
+          "cancel_token": "tok_req_contract_03",
+          "created_at": "2026-10-16T20:11:00Z",
+          "updated_at": "2026-10-16T20:11:00Z"
+        },
+        {
+          "id": "req_contract_04",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_title": "Don't Stop Believin'",
+          "song_artist": "Journey",
+          "singer_name": "Dana",
+          "key_change": 0,
+          "status": "completed",
+          "rank": 11760645100000,
+          "round": 1,
+          "singer_turn": 1,
+          "cancel_token": "tok_req_contract_04",
+          "created_at": "2026-10-16T20:01:00Z",
+          "updated_at": "2026-10-16T20:04:30Z"
+        },
+        {
+          "id": "req_contract_02",
+          "event_id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "song_title": "Mr. Brightside",
+          "song_artist": "The Killers",
+          "singer_name": "Bob",
+          "key_change": -1,
+          "status": "accepted",
+          "rank": 11760645400000,
+          "round": 1,
+          "singer_turn": 1,
+          "cancel_token": "tok_req_contract_02",
+          "created_at": "2026-10-16T20:06:00Z",
+          "updated_at": "2026-10-16T20:08:00Z"
+        }
+      ],
+      "current_round": 2,
+      "queue_version": 7
+    }
+  },
+  "forward_compatible_wire_sample": {
+    "requests": [
+      {
+        "id": "req_contract_02",
+        "event_id": "evt_contract_01",
+        "songbook_id": "sb_contract_01",
+        "song_title": "Mr. Brightside",
+        "song_artist": "The Killers",
+        "singer_name": "Bob",
+        "key_change": -1,
+        "status": "accepted",
+        "rank": 1000001760645400000,
+        "round": 1,
+        "singer_turn": 1,
+        "created_at": "2026-10-16T20:06:00Z",
+        "updated_at": "2026-10-16T20:08:00.500Z",
+        "future_request_field": {
+          "estimated_wait_seconds": 420,
+          "duet_partners": ["Alice"]
+        }
+      }
+    ],
+    "current_round": 1,
+    "queue_version": 7,
+    "future_queue_metadata": {
+      "stage_mode": "countdown"
+    }
+  }
+}

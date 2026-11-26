@@ -1,0 +1,132 @@
+{
+  "version": 2,
+  "max_global_drop_pct": 5.0,
+  "sources": [
+    {
+      "id": "karafun",
+      "name": "KaraFun Complete Catalog",
+      "provider": "KaraFun",
+      "format": "karafun_csv",
+      "lifecycle": "rolling",
+      "required": true,
+      "url": "https://www.karafun.com/karaoke-song-list.html",
+      "min_tracks": 60000,
+      "min_discs": 0,
+      "max_drop_pct": 10.0,
+      "max_stale_days": 21
+    },
+    {
+      "id": "zoom",
+      "name": "Zoom Karaoke Complete Catalog",
+      "provider": "Zoom",
+      "format": "zoom_csv",
+      "lifecycle": "rolling",
+      "required": true,
+      "url": "https://zoom-entertainments.co.uk/catalogue.csv",
+      "min_tracks": 12000,
+      "min_discs": 0,
+      "max_drop_pct": 10.0,
+      "max_stale_days": 21
+    },
+    {
+      "id": "party-tyme",
+      "name": "Party Tyme Official Songbook PDF",
+      "provider": "Party Tyme",
+      "format": "pdf",
+      "lifecycle": "rolling",
+      "required": true,
+      "url": "https://www.partytyme.net/songshop/cat/party_tyme_catalog.pdf",
+      "min_tracks": 25000,
+      "min_discs": 50000,
+      "max_drop_pct": 10.0,
+      "max_stale_days": 21
+    },
+    {
+      "id": "sound-choice",
+      "name": "Sound Choice Complete Disc Catalog PDF",
+      "provider": "Sound Choice",
+      "format": "pdf",
+      "lifecycle": "immutable",
+      "required": true,
+      "url": "https://img1.wsimg.com/blobby/go/5995a0cf-7d3f-429b-9350-4aa9d5c84e32/soundchoicefile.pdf",
+      "min_tracks": 30000,
+      "min_discs": 30000,
+      "max_drop_pct": 5.0
+    },
+    {
+      "id": "mr-entertainer",
+      "name": "Mr Entertainer Complete Catalog (XLSX)",
+      "provider": "Mr Entertainer",
+      "format": "xlsx",
+      "lifecycle": "immutable",
+      "required": true,
+      "url": "https://cdn.shopify.com/s/files/1/1023/3463/files/ListJan26.xlsx",
+      "min_tracks": 7000,
+      "min_discs": 7000,
+      "max_drop_pct": 5.0
+    },
+    {
+      "id": "sunfly",
+      "name": "Sunfly Karaoke English A-Z Songbook PDF",
+      "provider": "Sunfly",
+      "format": "pdf",
+      "lifecycle": "immutable",
+      "required": true,
+      "url": "https://rowans.co.uk/wp-content/uploads/2025/11/Sunfly-Karaoke-English-A-Z-by-Artist.pdf",
+      "min_tracks": 15000,
+      "min_discs": 0,
+      "max_drop_pct": 5.0
+    },
+    {
+      "id": "billboard-hot-100",
+      "name": "Billboard Hot 100 Historical Charts (1958-Present)",
+      "provider": "Billboard Hot 100",
+      "format": "billboard_csv",
+      "lifecycle": "rolling",
+      "required": true,
+      "url": "https://raw.githubusercontent.com/utdata/rwd-billboard-data/main/data-out/hot-100-current.csv",
+      "min_tracks": 25000,
+      "min_discs": 0,
+      "max_drop_pct": 5.0,
+      "max_stale_days": 30
+    },
+    {
+      "id": "billboard-country",
+      "name": "Billboard Hot Country Songs (1958-2018)",
+      "provider": "Billboard Country",
+      "genre": "Country",
+      "format": "billboard_csv",
+      "lifecycle": "immutable",
+      "required": true,
+      "url": "https://raw.githubusercontent.com/pdp2600/chartscraper/master/ChartScraper_data/All_Country_Songs_from_2011-04-09_to_2018-12-31.csv",
+      "min_tracks": 10000,
+      "min_discs": 0,
+      "max_drop_pct": 5.0
+    },
+    {
+      "id": "billboard-rb",
+      "name": "Billboard Hot R&B/Hip-Hop Songs (1958-2018)",
+      "provider": "Billboard R&B/Hip-Hop",
+      "genre": "R&B",
+      "format": "billboard_csv",
+      "lifecycle": "immutable",
+      "required": true,
+      "url": "https://raw.githubusercontent.com/pdp2600/chartscraper/master/ChartScraper_data/All_Hip_Hop_Songs_from_1958-10-20_to_2018-12-31.csv",
+      "min_tracks": 12000,
+      "min_discs": 0,
+      "max_drop_pct": 5.0
+    },
+    {
+      "id": "historical-discs",
+      "name": "historical_discs.csv",
+      "provider": "Multi-Publisher",
+      "format": "disc_csv",
+      "lifecycle": "immutable",
+      "required": true,
+      "local_path": "./internal/reference/data/historical_discs.csv",
+      "min_tracks": 70,
+      "min_discs": 70,
+      "max_drop_pct": 5.0
+    }
+  ]
+}

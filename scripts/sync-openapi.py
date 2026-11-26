@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""
+sync-openapi.py — Synchronizes and validates OpenAPI specification artifacts.
+
+Canonical Source:
+  docs/openapi.yaml
+
+Generated Artifacts:
+  web/public/openapi.yaml
+  web/public/openapi.json
+
+Usage:
+  python3 scripts/sync-openapi.py          # Generate/sync artifacts
+  python3 scripts/sync-openapi.py --check  # Verify artifacts match canonical source (fails with exit code 1 on drift)
+"""
+
+import sys
+import os
+import json
+import yaml
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CANONICAL_SPEC = os.path.join(REPO_ROOT, "docs", "openapi.yaml")
+PUBLIC_YAML = os.path.join(REPO_ROOT, "web", "public", "openapi.yaml")
+PUBLIC_JSON = os.path.join(REPO_ROOT, "web", "public", "openapi.json")
+
+def load_canonical():
+    if not os.path.exists(CANONICAL_SPEC):
+        sys.stderr.write(f"Error: canonical spec not found at {CANONICAL_SPEC}\n")
+        sys.exit(1)
+    with open(CANONICAL_SPEC, "r", encoding="utf-8") as f:
+        content = f.read()
+    data = yaml.safe_load(content)
+    return content, data
+
+def main():
+    check_mode = "--check" in sys.argv
+
+    raw_yaml, parsed_data = load_canonical()
+    expected_json = json.dumps(parsed_data, indent=2, ensure_ascii=False) + "\n"
+
+    if check_mode:
+        drift = False
+
+        if not os.path.exists(PUBLIC_YAML):
+            sys.stderr.write(f"[DRIFT] Missing {PUBLIC_YAML}\n")
+            drift = True
+        else:
+            with open(PUBLIC_YAML, "r", encoding="utf-8") as f:
+                current_yaml = f.read()
+            if current_yaml != raw_yaml:
+                sys.stderr.write(f"[DRIFT] {PUBLIC_YAML} does not match {CANONICAL_SPEC}\n")
+                drift = True
+
+        if not os.path.exists(PUBLIC_JSON):
+            sys.stderr.write(f"[DRIFT] Missing {PUBLIC_JSON}\n")
+            drift = True
+        else:
+            with open(PUBLIC_JSON, "r", encoding="utf-8") as f:
+                try:
+                    current_json_data = json.load(f)
+                    if current_json_data != parsed_data:
+                        sys.stderr.write(f"[DRIFT] {PUBLIC_JSON} content differs from {CANONICAL_SPEC}\n")
+                        drift = True
+                except Exception as e:
+                    sys.stderr.write(f"[ERROR] Failed to parse {PUBLIC_JSON}: {e}\n")
+                    drift = True
+
+        if drift:
+            sys.stderr.write("\nOpenAPI artifacts are out of sync with docs/openapi.yaml.\n")
+            sys.stderr.write("Run 'mise run openapi:sync' or 'python3 scripts/sync-openapi.py' to regenerate.\n")
+            sys.exit(1)
+
+        print("OpenAPI artifacts are in sync with canonical docs/openapi.yaml.")
+        sys.exit(0)
+
+    # Generation mode
+    os.makedirs(os.path.dirname(PUBLIC_YAML), exist_ok=True)
+    with open(PUBLIC_YAML, "w", encoding="utf-8") as f:
+        f.write(raw_yaml)
+    with open(PUBLIC_JSON, "w", encoding="utf-8") as f:
+        f.write(expected_json)
+
+    print(f"Generated {PUBLIC_YAML}")
+    print(f"Generated {PUBLIC_JSON}")
+
+if __name__ == "__main__":
+    main()

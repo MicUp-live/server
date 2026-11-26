@@ -1,0 +1,198 @@
+{
+  "version": 1,
+  "measured_at": "2026-10-18",
+  "policy": {
+    "description": "Maintainability hotspot baseline and budget policy (M6). Production source files in internal/, cmd/, and web/src/ (excluding tests) exceeding default_max_lines must be explicitly registered in baseline_files or exceptions with a reviewed max_lines ceiling, owner, and rationale/removal_condition.",
+    "default_max_lines": 600,
+    "advisory_warn_lines": 500,
+    "tracked_roots": [
+      "internal",
+      "cmd",
+      "web/src"
+    ],
+    "tracked_extensions": [
+      ".go",
+      ".js",
+      ".jsx"
+    ],
+    "excluded_suffixes": [
+      "_test.go",
+      ".test.js",
+      ".test.jsx"
+    ]
+  },
+  "baseline_files": {
+    "internal/handlers/queue.go": {
+      "category": "backend_adapter",
+      "measured_lines": 599,
+      "max_lines": 600,
+      "owner": "internal/handlers + internal/queue maintainers",
+      "rationale": "Canonical event-scoped queue HTTP adapter (reduced from 742 lines after retiring songbook-scoped compatibility routes)."
+    },
+    "internal/handlers/auth.go": {
+      "category": "backend_adapter",
+      "measured_lines": 788,
+      "max_lines": 788,
+      "owner": "internal/handlers + internal/auth maintainers",
+      "rationale": "Authentication HTTP adapter covering registration, login, refresh, verification, profile updates, and password reset endpoints."
+    },
+    "internal/handlers/passkey.go": {
+      "category": "backend_adapter",
+      "measured_lines": 716,
+      "max_lines": 716,
+      "owner": "internal/handlers + internal/auth maintainers",
+      "rationale": "WebAuthn/FIDO2 passkey registration and login transport ceremony adapter."
+    },
+    "internal/handlers/songbook.go": {
+      "category": "backend_adapter",
+      "measured_lines": 507,
+      "max_lines": 520,
+      "owner": "internal/handlers + internal/songbook + internal/catalog maintainers",
+      "rationale": "Songbook and catalog HTTP adapter (reduced from 1,076 lines in Stage B and 616 lines after retiring legacy sync endpoints)."
+    },
+    "internal/event/service.go": {
+      "category": "backend_service",
+      "measured_lines": 640,
+      "max_lines": 640,
+      "owner": "internal/event maintainers",
+      "rationale": "Event lifecycle service owning creation, M11 versioned settings updates, M3b resumable restart batches, and M3c retention cleanup."
+    },
+    "internal/account/service.go": {
+      "category": "backend_service",
+      "measured_lines": 586,
+      "max_lines": 590,
+      "owner": "internal/account maintainers",
+      "rationale": "Account export and M7/M14 multi-step cascading account deletion recovery service."
+    },
+    "internal/reference/compiler.go": {
+      "category": "backend_service",
+      "measured_lines": 635,
+      "max_lines": 635,
+      "owner": "internal/reference maintainers",
+      "rationale": "Canonical reference catalog dictionary and disc map compiler."
+    },
+    "internal/queue/service.go": {
+      "category": "backend_service",
+      "measured_lines": 561,
+      "max_lines": 575,
+      "owner": "internal/queue maintainers",
+      "rationale": "Canonical queue admission, stage command, rotation transition, and versioned mutation service."
+    },
+    "internal/store/dynamo/import_jobs.go": {
+      "category": "backend_store",
+      "measured_lines": 881,
+      "max_lines": 881,
+      "owner": "internal/store/dynamo + internal/catalog maintainers",
+      "rationale": "DynamoDB import job store implementing M8 dispatch claims, generation assignment, progress fencing, and exhaustion reset."
+    },
+    "internal/store/dynamo/catalog_versions.go": {
+      "category": "backend_store",
+      "measured_lines": 805,
+      "max_lines": 805,
+      "owner": "internal/store/dynamo + internal/catalog maintainers",
+      "rationale": "DynamoDB catalog version store implementing M12 build reclamation, M13 transactional publication fencing, and M14 two-phase deletion reservation."
+    },
+    "internal/store/dynamo/auth.go": {
+      "category": "backend_store",
+      "measured_lines": 743,
+      "max_lines": 743,
+      "owner": "internal/store/dynamo + internal/auth + internal/account maintainers",
+      "rationale": "DynamoDB authentication and user store implementing identity claims, M10 auth epochs, and M7 assign-once account deletion tombstones."
+    },
+    "internal/store/dynamo/events.go": {
+      "category": "backend_store",
+      "measured_lines": 685,
+      "max_lines": 685,
+      "owner": "internal/store/dynamo + internal/event maintainers",
+      "rationale": "DynamoDB event store implementing M11 conditional snapshot/metadata version fencing, rotation transitions, and M7 deletion barriers."
+    },
+    "web/src/pages/kj/Songbooks.jsx": {
+      "category": "frontend_hotspot",
+      "measured_lines": 825,
+      "max_lines": 825,
+      "owner": "web/src/pages/kj maintainers",
+      "rationale": "KJ songbook management page (CRUD, song overrides, sync triggers, and import launcher)."
+    },
+    "web/src/pages/Docs.jsx": {
+      "category": "frontend_hotspot",
+      "measured_lines": 783,
+      "max_lines": 783,
+      "owner": "web/src/pages maintainers",
+      "rationale": "Static developer and platform documentation page; candidate for contract-sourced extraction under Stage D."
+    },
+    "web/src/components/SongRequestModal.jsx": {
+      "category": "frontend_hotspot",
+      "measured_lines": 690,
+      "max_lines": 690,
+      "owner": "web/src/components maintainers",
+      "rationale": "Singer song request submission modal (pitch shift, singer name, favorites memory, and submission handling)."
+    },
+    "web/src/pages/kj/components/ShowSettingsModal.jsx": {
+      "category": "frontend_hotspot",
+      "measured_lines": 631,
+      "max_lines": 631,
+      "owner": "web/src/pages/kj maintainers",
+      "rationale": "Host show configuration modal extracted from LiveQueue.jsx in Stage C."
+    },
+    "web/src/pages/singer/hooks/useCatalogSearch.js": {
+      "category": "frontend_hotspot",
+      "measured_lines": 582,
+      "max_lines": 600,
+      "owner": "web/src/pages/singer maintainers",
+      "rationale": "Singer catalog search and Web Worker coordination hook extracted from PublicBook.jsx in Stage C."
+    },
+    "web/src/pages/singer/PublicBook.jsx": {
+      "category": "frontend_decomposed",
+      "measured_lines": 457,
+      "max_lines": 500,
+      "owner": "web/src/pages/singer maintainers",
+      "rationale": "Decomposed in Stage C from 2,156 lines to 457 lines; capped to prevent coordinator regression."
+    },
+    "web/src/pages/Kiosk.jsx": {
+      "category": "frontend_decomposed",
+      "measured_lines": 422,
+      "max_lines": 450,
+      "owner": "web/src/pages maintainers",
+      "rationale": "Decomposed in Stage C from 894 lines to 422 lines; capped to prevent coordinator regression."
+    },
+    "web/src/pages/kj/LiveQueue.jsx": {
+      "category": "frontend_decomposed",
+      "measured_lines": 335,
+      "max_lines": 400,
+      "owner": "web/src/pages/kj maintainers",
+      "rationale": "Decomposed in Stage C from 2,984 lines to 335 lines; capped to prevent coordinator regression."
+    },
+    "web/src/components/SingerQueueModal.jsx": {
+      "category": "frontend_decomposed",
+      "measured_lines": 136,
+      "max_lines": 250,
+      "owner": "web/src/components maintainers",
+      "rationale": "Decomposed in Stage C from 840 lines to 136 lines; capped to prevent coordinator regression."
+    },
+    "web/src/components/AssistantImport.jsx": {
+      "category": "frontend_decomposed",
+      "measured_lines": 118,
+      "max_lines": 250,
+      "owner": "web/src/components maintainers",
+      "rationale": "Decomposed in Stage C from 882 lines to 118 lines; capped to prevent coordinator regression."
+    }
+  },
+  "exceptions": {
+    "internal/store/dynamo/requests.go": {
+      "category": "backend_store",
+      "measured_lines": 1098,
+      "max_lines": 1098,
+      "owner": "internal/store/dynamo + internal/queue maintainers",
+      "rationale": "Consolidates atomic queue admission (M2), deletion/version coupling (M3a), retention TTL fencing (M3c), and deletion parent barriers (M7) on canonical event-requests.",
+      "removal_condition": "Remove or lower exception when shared DynamoDB transaction/condition helpers are extracted."
+    },
+    "internal/catalog/service.go": {
+      "category": "backend_service",
+      "measured_lines": 797,
+      "max_lines": 797,
+      "owner": "internal/catalog maintainers",
+      "rationale": "Owns catalog manifest reading, song overrides, and M8 recoverable import dispatch/upload completion/reconciliation (reduced from 955 lines after retiring legacy DynamoDB song/sync paths).",
+      "removal_condition": "Split import job lifecycle/reconciliation orchestration from catalog manifest/override read-write operations when internal/catalog next adds or modifies import or catalog workflows."
+    }
+  }
+}

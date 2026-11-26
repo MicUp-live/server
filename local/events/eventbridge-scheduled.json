@@ -1,0 +1,13 @@
+{
+  "version": "0",
+  "id": "local-scheduled-event-1",
+  "detail-type": "Scheduled Event",
+  "source": "aws.events",
+  "account": "000000000000",
+  "time": "2026-09-13T03:00:00Z",
+  "region": "us-east-2",
+  "resources": [
+    "arn:aws:events:us-east-2:000000000000:rule/micup-local-catalog-compaction"
+  ],
+  "detail": {}
+}

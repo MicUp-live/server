@@ -1,0 +1,20 @@
+{
+  "Records": [
+    {
+      "messageId": "local-import-message-1",
+      "receiptHandle": "local-receipt-1",
+      "body": "{\"id\":\"import-local\",\"manifest_key\":\"imports/import-local.json\",\"prune_missing\":false}",
+      "attributes": {
+        "ApproximateReceiveCount": "1",
+        "SentTimestamp": "1789257600000",
+        "SenderId": "000000000000",
+        "ApproximateFirstReceiveTimestamp": "1789257600000"
+      },
+      "messageAttributes": {},
+      "md5OfBody": "",
+      "eventSource": "aws:sqs",
+      "eventSourceARN": "arn:aws:sqs:us-east-2:000000000000:micup-local-import-jobs",
+      "awsRegion": "us-east-2"
+    }
+  ]
+}

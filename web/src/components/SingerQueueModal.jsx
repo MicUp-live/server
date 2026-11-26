@@ -1,0 +1,149 @@
+import { useSingerQueue } from './singerQueue/hooks/useSingerQueue.js'
+import { SingerQueueHeader } from './singerQueue/components/SingerQueueHeader.jsx'
+import { SingerScreenNameBanner } from './singerQueue/components/SingerScreenNameBanner.jsx'
+import { SingerDeclinedRequests } from './singerQueue/components/SingerDeclinedRequests.jsx'
+import { SingerActiveRequests } from './singerQueue/components/SingerActiveRequests.jsx'
+import { SingerSungRequests } from './singerQueue/components/SingerSungRequests.jsx'
+import { SingerPublicRotation } from './singerQueue/components/SingerPublicRotation.jsx'
+import { EditScreenNameModal } from './EditScreenNameModal.jsx'
+import { ShowStatusBanner } from './ShowStatusBanner.jsx'
+import { getShowStatusInfo } from '../utils/showStatus.js'
+
+export function SingerQueueModal({
+    songbookId,
+    songbookName,
+    eventId,
+    eventName,
+    eventStatus,
+    venueName,
+    rotationMode,
+    autoAccept,
+    isOpen,
+    onClose,
+    onEventJoined,
+    onEventStatusChange,
+    onReRequest,
+}) {
+    const {
+        screenName,
+        setScreenNameState,
+        showScreenNameModal,
+        setShowScreenNameModal,
+        queue,
+        loading,
+        currentRound,
+        eventStatus: liveEventStatus,
+        noEvent,
+        joinCodeInput,
+        setJoinCodeInput,
+        joining,
+        alertsEnabled,
+        toggleAlerts,
+        myRequests,
+        setMyRequests,
+        activeRequests,
+        completedRequests,
+        declinedRequests,
+        myUpNext,
+        dismissDeclinedRequest,
+        cancelMyRequest,
+        handleJoin,
+    } = useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClose, onEventJoined, onEventStatusChange })
+
+    if (!isOpen) return null
+
+    const effectiveStatus = liveEventStatus || eventStatus
+    const statusInfo = getShowStatusInfo(effectiveStatus)
+    const displayTitle = venueName ? `${venueName} — ${eventName || 'Show'}` : (eventName || songbookName || 'Live Queue')
+
+    return (
+        <div 
+            class="modal-overlay"
+            onClick={onClose}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="singer-queue-title"
+        >
+            <div 
+                class="modal-sheet modal-sheet-wide"
+                onClick={e => e.stopPropagation()}
+            >
+                <SingerQueueHeader
+                    displayTitle={displayTitle}
+                    eventStatus={effectiveStatus}
+                    alertsEnabled={alertsEnabled}
+                    onToggleAlerts={toggleAlerts}
+                    onClose={onClose}
+                    myUpNext={myUpNext}
+                />
+
+                {/* Body */}
+                <div style={{ flex: 1, overflowY: 'auto', padding: 'var(--space-4)' }}>
+                    <ShowStatusBanner status={effectiveStatus} compact />
+
+                    <SingerScreenNameBanner
+                        screenName={screenName}
+                        onOpenEdit={() => setShowScreenNameModal(true)}
+                    />
+
+                    <SingerDeclinedRequests
+                        declinedRequests={declinedRequests}
+                        onDismiss={dismissDeclinedRequest}
+                    />
+
+                    <SingerActiveRequests
+                        activeRequests={activeRequests}
+                        queue={queue}
+                        currentRound={currentRound}
+                        eventStatus={effectiveStatus}
+                        onCancelRequest={cancelMyRequest}
+                    />
+
+                    <SingerSungRequests
+                        completedRequests={completedRequests}
+                        eventStatus={effectiveStatus}
+                        onRequestsChange={() => setMyRequests([...myRequests])}
+                        onReRequest={onReRequest}
+                    />
+
+                    <SingerPublicRotation
+                        loading={loading}
+                        noEvent={noEvent}
+                        queue={queue}
+                        currentRound={currentRound}
+                        eventStatus={effectiveStatus}
+                        joinCodeInput={joinCodeInput}
+                        onJoinCodeInput={setJoinCodeInput}
+                        onJoin={handleJoin}
+                        joining={joining}
+                    />
+                </div>
+
+                {/* Footer */}
+                <div style={{
+                    padding: 'var(--space-3) var(--space-5)',
+                    borderTop: '1px solid var(--color-border)',
+                    background: 'var(--color-surface-alt)',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-3)' }}>
+                        <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)' }}>
+                            {statusInfo.queueFooterMessage}
+                        </span>
+                    </div>
+                    <button type="button" class="btn btn-secondary btn-sm" onClick={onClose}>
+                        Close
+                    </button>
+                </div>
+            </div>
+
+            <EditScreenNameModal
+                isOpen={showScreenNameModal}
+                onClose={() => setShowScreenNameModal(false)}
+                onUpdated={(newName) => setScreenNameState(newName)}
+            />
+        </div>
+    )
+}

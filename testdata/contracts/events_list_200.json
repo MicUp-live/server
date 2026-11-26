@@ -1,0 +1,103 @@
+{
+  "contract_id": "C04",
+  "description": "GET /api/v1/events host event list envelope, RFC3339 timestamps, omitted optional fields, empty array semantics, and unknown future fields",
+  "request": {
+    "method": "GET",
+    "path": "/api/v1/events",
+    "required_scope": "events:read",
+    "headers": {
+      "Authorization": "Bearer mk_live_contract_events_read"
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "events": [
+        {
+          "id": "evt_contract_01",
+          "songbook_id": "sb_contract_01",
+          "venue_name": "The Dubliner",
+          "name": "Friday Night Live Karaoke",
+          "join_code": "DUBL",
+          "status": "active",
+          "queue_version": 7,
+          "recurring": true,
+          "tip_url": "https://venmo.com/kjdave",
+          "announcement": "Welcome singers! Ask about duets.",
+          "rotation_mode": "round_robin",
+          "auto_accept": false,
+          "submission_delay": 60,
+          "max_active_per_singer": 2,
+          "allow_key_change": true,
+          "current_round": 2,
+          "kiosk_pin": "1234",
+          "openkj_key": "okj_evt_contract_01_secret",
+          "created_at": "2026-10-16T20:00:00Z",
+          "updated_at": "2026-10-16T21:15:30Z"
+        },
+        {
+          "id": "evt_contract_02",
+          "songbook_id": "sb_contract_01",
+          "venue_name": "",
+          "name": "Acoustic Sunday",
+          "join_code": "SUNY",
+          "status": "ended",
+          "queue_version": 14,
+          "recurring": false,
+          "rotation_mode": "fcfs",
+          "auto_accept": true,
+          "submission_delay": 0,
+          "max_active_per_singer": 1,
+          "allow_key_change": false,
+          "current_round": 4,
+          "kiosk_pin": "9876",
+          "openkj_key": "okj_evt_contract_02_secret",
+          "created_at": "2026-10-11T19:00:00Z",
+          "updated_at": "2026-10-11T23:45:00Z",
+          "ended_at": "2026-10-11T23:45:00Z"
+        }
+      ]
+    }
+  },
+  "empty_response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "body": {
+      "events": []
+    }
+  },
+  "forward_compatible_wire_sample": {
+    "events": [
+      {
+        "id": "evt_contract_01",
+        "songbook_id": "sb_contract_01",
+        "venue_name": "The Dubliner",
+        "name": "Friday Night Live Karaoke",
+        "join_code": "DUBL",
+        "status": "active",
+        "queue_version": 7,
+        "recurring": true,
+        "rotation_mode": "round_robin",
+        "auto_accept": false,
+        "submission_delay": 60,
+        "max_active_per_singer": 2,
+        "allow_key_change": true,
+        "current_round": 2,
+        "kiosk_pin": "1234",
+        "openkj_key": "okj_evt_contract_01_secret",
+        "created_at": "2026-10-16T20:00:00Z",
+        "updated_at": "2026-10-16T21:15:30.123456Z",
+        "future_event_capability": {
+          "stage_display_theme": "neon",
+          "max_duet_singers": 3
+        }
+      }
+    ],
+    "future_pagination_cursor": null
+  }
+}

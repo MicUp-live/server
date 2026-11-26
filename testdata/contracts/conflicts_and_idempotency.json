@@ -1,0 +1,186 @@
+{
+  "contract_id": "C03",
+  "description": "Queue version conflicts (409 queue_version_conflict), idempotent replay (200 without second version bump), and idempotency payload mismatch conflicts (409 idempotency_key_conflict)",
+  "version_conflicts": [
+    {
+      "name": "stale_expected_queue_version_on_status_patch",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/events/evt_contract_01/requests/req_contract_01",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "status": "completed",
+          "expected_queue_version": 7
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "11"
+        },
+        "body": {
+          "error": "queue_version_conflict",
+          "expected_queue_version": 7,
+          "current_queue_version": 11,
+          "queue_version": 11
+        }
+      }
+    },
+    {
+      "name": "stale_expected_queue_version_on_reorder",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/events/evt_contract_01/requests/reorder",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "order": [
+            "req_contract_01",
+            "req_contract_02"
+          ],
+          "expected_queue_version": 7
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "11"
+        },
+        "body": {
+          "error": "queue_version_conflict",
+          "expected_queue_version": 7,
+          "current_queue_version": 11,
+          "queue_version": 11
+        }
+      }
+    }
+  ],
+  "idempotent_replays": [
+    {
+      "name": "replay_status_patch_returns_stored_result_without_advancing_version",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/events/evt_contract_01/requests/req_contract_03",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "11111111-2222-4333-8444-555555555501"
+        },
+        "body": {
+          "status": "accepted",
+          "expected_queue_version": 7
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "8"
+        },
+        "expected_fields": {
+          "id": "req_contract_03",
+          "status": "accepted"
+        }
+      },
+      "event_queue_version_remains": 11
+    },
+    {
+      "name": "replay_reorder_returns_stored_result_without_advancing_version",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/events/evt_contract_01/requests/reorder",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "11111111-2222-4333-8444-555555555504"
+        },
+        "body": {
+          "order": [
+            "req_contract_02",
+            "req_contract_01"
+          ],
+          "expected_queue_version": 10
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Queue-Version": "11"
+        },
+        "body": {
+          "status": "ok"
+        }
+      },
+      "event_queue_version_remains": 11
+    }
+  ],
+  "idempotency_conflicts": [
+    {
+      "name": "reused_idempotency_key_with_different_status_payload_returns_409",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/events/evt_contract_01/requests/req_contract_03",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "11111111-2222-4333-8444-555555555501"
+        },
+        "body": {
+          "status": "completed",
+          "expected_queue_version": 7
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "idempotency_key_conflict"
+        }
+      }
+    },
+    {
+      "name": "reused_idempotency_key_with_different_reorder_payload_returns_409",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/events/evt_contract_01/requests/reorder",
+        "required_scope": "requests:write",
+        "headers": {
+          "Authorization": "Bearer mk_live_contract_requests_write",
+          "Content-Type": "application/json",
+          "Idempotency-Key": "11111111-2222-4333-8444-555555555504"
+        },
+        "body": {
+          "order": [
+            "req_contract_01",
+            "req_contract_02"
+          ],
+          "expected_queue_version": 10
+        }
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "error": "idempotency_key_conflict"
+        }
+      }
+    }
+  ]
+}

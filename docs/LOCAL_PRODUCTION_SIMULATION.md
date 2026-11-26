@@ -1,8 +1,9 @@
 # Local production simulation
 
 This directory describes a local-only simulation of the AWS runtime. It does
-not add resources to AWS and must not be passed to `sam deploy`. DynamoDB Local
-provides the operational database, while the local AWS emulator configured by
+not add resources to AWS and must not be passed to `sam deploy`. PostgreSQL 16
+(`postgres:16-alpine`, container `micup-postgres` on `127.0.0.1:5432`) provides
+the Aurora DSQL-compatible operational database, while LocalStack configured by
 `docker-compose.yml` provides S3, SQS, and classic SES-compatible endpoints.
 The API and workers use the same entrypoints and Amazon Linux 2023 custom
 runtime contract as production.
@@ -20,13 +21,14 @@ docker compose ps
 
 `local:up` starts both containers, waits for their health checks, lets LocalStack
 create the bucket, queues, DLQs, redrive policies, and SES test identity, then
-creates the DynamoDB tables through the application's own schema code. All
-published ports are bound to loopback. The compose services are joined to the
+applies the 15-table PostgreSQL / Aurora DSQL schema
+(`internal/store/postgres/migrations/0001_initial.sql`) via `cmd/local-bootstrap`.
+All published ports are bound to loopback. The compose services are joined to the
 `micup-local` Docker network.
 SAM's Lambda containers must join that network so the service DNS names in
 `local/sam-template.yaml` resolve. The host process still uses `127.0.0.1`.
 If you invoke SAM without the compose network, copy `local/sam-env.json` and
-replace `dynamodb`/`localstack` with `host.docker.internal` (or the host
+replace `postgres`/`localstack` with `host.docker.internal` (or the host
 gateway address on Linux).
 
 ## Build and invoke the Lambda artifacts
@@ -82,6 +84,7 @@ mise run local:lambda:catalog
 mise run local:lambda:import
 mise run local:lambda:compact
 mise run local:lambda:gc
+mise run local:lambda:reconcile
 ```
 
 The catalog and import fixtures contain placeholder IDs. Seed the matching
@@ -118,7 +121,7 @@ charges.
 The simulation intentionally matches configuration and event contracts while
 remaining inexpensive:
 
-- The five Lambda functions use `provided.al2023`, `bootstrap`, and production
+- The six Lambda functions use `provided.al2023`, `bootstrap`, and production
   memory/timeout settings. This x86_64 workstation runs x86_64 SAM artifacts;
   `mise run build:all` separately cross-compiles the same entrypoints to ARM64
   for production. CPU architecture-specific behavior remains a parity boundary.
@@ -132,19 +135,23 @@ remaining inexpensive:
   available for manual CLI tests. IAM policy enforcement, SES sandbox and
   deliverability, S3 OAC/public-access policy, and CloudWatch metrics/logs are
   not reproduced.
-- DynamoDB Local exercises table/index/transaction behavior and persists data
-  in the compose volume, but it does not reproduce DynamoDB's production
-  regional capacity behavior. Global secondary indexes are not a substitute
-  for testing production eventual-consistency races; retain the concurrent
-  integration tests for those invariants.
+- PostgreSQL 16 (`postgres:16-alpine`) exercises the same 15-table relational
+  schema, `FOR UPDATE` fencing, and transaction semantics locally and persists
+  data in the compose `postgres_data` volume, while production runs on Amazon
+  Aurora DSQL with IAM token auth (`aws-sdk-go-v2/feature/dsql/auth`, zero
+  static passwords or VPC) and `ASYNC` index creation. Local PostgreSQL does not
+  reproduce Aurora DSQL's distributed OCC contention or transaction limits;
+  retain the bounded `SQLSTATE 40001` retry and concurrency integration tests in
+  `internal/store/postgres`.
 - Lambda cold starts, retry/backoff, SQS visibility timeout/redrive behavior,
   and EventBridge scheduling are represented by fixtures but not automatically
   exercised by `sam local invoke`. Test handlers for idempotency and repeated
   delivery explicitly.
 
 Never use production credentials in the local env. The defaults in this
-directory use the LocalStack/DynamoDB Local dummy account (`000000000000`) and
-dummy credentials supplied by the local emulator.
+directory use the LocalStack dummy account (`000000000000`), local PostgreSQL
+credentials (`micup:micup-local-password`), and dummy AWS credentials supplied
+for the local emulator.
 
 Use `mise run local:down` to stop the stack without deleting state. The
 explicitly destructive `mise run local:reset` task removes both emulator

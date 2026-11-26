@@ -6,10 +6,11 @@ MicUp.live helps karaoke hosts share libraries and manage live shows. Singers
 browse and submit requests from a browser without a mandatory account.
 
 The current implementation is a modular monolith: a Go BFF and background
-workers, with a Vite + Preact SPA. DynamoDB holds operational state; S3/CDN
-assets hold immutable catalogs; SQS carries background work. Catalog search
-runs in the browser, and live views synchronize through HTTP polling. Go 1.26,
-Node 22, Python 3.14, and the local environment are managed by `mise`.
+workers, with a Vite + Preact SPA. PostgreSQL 16 (local) / Amazon Aurora DSQL
+(production) holds operational state; S3/CDN assets hold immutable catalogs; SQS
+carries background work. Catalog search runs in the browser, and live views
+synchronize through HTTP polling. Go 1.26, Node 22, Python 3.14, and the local
+environment are managed by `mise`.
 
 These are current architecture choices. Routine maintenance follows them;
 explicitly requested redesigns can revisit them with contract, migration, and
@@ -74,7 +75,8 @@ Current capability owners are `internal/queue`, `internal/event`,
 `internal/songbook`, `internal/catalog`, `internal/account`, and `internal/auth`
 (password reset). HTTP routing and
 middleware live in `internal/app`; protocol adapters in `internal/handlers`;
-persistence contracts and DynamoDB implementation in `internal/store`.
+persistence contracts in `internal/store` and PostgreSQL / Aurora DSQL
+implementation in `internal/store/postgres`.
 Frontend pages, components, hooks, and search workers live under `web/src`.
 
 Transport adapters translate input, authorization, and output. Business
@@ -132,8 +134,8 @@ suites need not be repeated without new edits or unresolved evidence.
 | Change | Required evidence |
 | --- | --- |
 | Documentation | Verify referenced paths/commands, reconcile conflicting claims, and run `git diff --check`; no application suite needed |
-| Go behavior | Focused regression coverage, `mise run test:packages` (or `mise run test` for full backend including DynamoDB), and fitness checks |
-| DynamoDB or concurrency | Real DynamoDB Local tests with `-count=1` (use `mise run test` for the parallel sharded suite or focused `go test -count=1 ./internal/store/dynamo -run ...`), including applicable conflicts, retries, and rollback; fakes alone do not prove persistence guarantees |
+| Go behavior | Focused regression coverage, `mise run test` (or `mise run test:postgres` for store tests), and fitness checks |
+| PostgreSQL / Aurora DSQL or concurrency | Real PostgreSQL 16 tests with `-count=1` against `DATABASE_URL` (use `mise run test:postgres` or focused `go test -count=1 ./internal/store/postgres -run ...`), including applicable conflicts, `SQLSTATE 40001` retries, `FOR UPDATE` fencing, and rollback; fakes alone do not prove persistence guarantees |
 | Authentication/authorization | Tests through the real router/middleware for applicable credentials, tenant boundaries, and denied actions |
 | Frontend behavior | `npm --prefix web test`, `npm --prefix web run build`, token checks for styles, and browser verification of changed interactions when available |
 | API or headers | Update canonical OpenAPI, run `mise run openapi:sync` and then `mise run openapi:check`; verify adapters and applicable CORS preflight/exposed headers |
@@ -152,30 +154,29 @@ make checks pass.
 ```bash
 mise install
 mise run python:install        # Python dependencies in the mise-managed .venv
-mise run db:up                 # DynamoDB Local
-mise run local:up              # Full local emulator setup
+mise run db:up                 # Local PostgreSQL 16 (alias: mise run pg:up)
+mise run local:up              # Full local emulator setup (PostgreSQL 16 + LocalStack)
 mise run dev                   # Backend
 mise run web:dev               # Frontend
-mise run test:packages         # Fast Go package tests (excludes internal/store/dynamo)
-mise run test                  # Full backend tests (4 parallel ephemeral DynamoDB shards)
+mise run test:packages         # All Go package tests against local PostgreSQL 16
+mise run test:postgres         # PostgreSQL store & backend tests only
+mise run test                  # Full backend test suite (~8s against local PostgreSQL 16)
 mise run test:all              # Backend + frontend test suites
 mise run check:fitness
 mise run openapi:check
 ```
 
-Prefer `mise run test:packages` for non-DynamoDB Go changes and `mise run test`
-for the full backend suite: `mise run test` shards `internal/store/dynamo`
-across 4 ephemeral in-memory DynamoDB Local containers via
-`scripts/test-dynamo-shard.sh` (~1 minute, without touching the persistent dev
-volume). Avoid running unsharded `mise exec -- go test ./...` against the single
-persistent DynamoDB instance, which is much slower and can hit the default
-10-minute test timeout.
+Use `mise run test` (which invokes `test:packages` and depends on `pg:up`) for
+the full Go test suite against local `postgres:16-alpine` (`micup-postgres` on
+`127.0.0.1:5432`), or `mise run test:postgres` for focused store tests in
+`internal/store/postgres` and `internal/store/backend`.
 
 Use `mise exec -- <command>` when the shell has not loaded repository tool
-versions/environment. DynamoDB tests skip when `DYNAMO_ENDPOINT` is unset; a
-passing run with skipped integration tests is not persistence evidence. Local
-DynamoDB is persistent and loopback-only, normally on port 8000; S3/SQS workflows
-also need LocalStack. See [local simulation](docs/LOCAL_PRODUCTION_SIMULATION.md).
+versions/environment. `internal/store/postgres` integration tests skip when
+`DATABASE_URL` is unset; a passing run with skipped integration tests is not
+persistence evidence. Local PostgreSQL 16 is persistent and loopback-only
+(`127.0.0.1:5432`); S3/SQS/SES workflows also use LocalStack (`127.0.0.1:4566`).
+See [local simulation](docs/LOCAL_PRODUCTION_SIMULATION.md).
 
 If a test stalls, diagnose connectivity and use a bounded `-timeout` on a focused
 test before launching another full suite. Report blocked checks honestly. Do not

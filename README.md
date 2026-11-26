@@ -10,8 +10,8 @@ MicUp.live solves the "binder problem" for local KJs by turning messy local medi
 | :--- | :--- |
 | [**Concepts**](./docs/CONCEPTS.md) | Durable product vocabulary, actor boundaries, and design intent for refactors. |
 | [**Refactor Contracts**](./docs/CONTRACTS.md) | Stable behavioral requirements, evidence map, known gaps, and refactor checklist. |
-| 🏛️ [**Architecture & System Design**](./ARCHITECTURE.md) | Static-first serverless BFF pattern, DynamoDB schema, S3 compiler, and security model. |
-| 💻 [**Local Production Simulation**](./docs/LOCAL_PRODUCTION_SIMULATION.md) | Zero-cost offline AWS simulation with DynamoDB Local, LocalStack, and SAM Lambda emulation. |
+| 🏛️ [**Architecture & System Design**](./ARCHITECTURE.md) | Static-first serverless BFF pattern, PostgreSQL / Aurora DSQL schema, S3 compiler, and security model. |
+| 💻 [**Local Production Simulation**](./docs/LOCAL_PRODUCTION_SIMULATION.md) | Zero-cost offline simulation with PostgreSQL 16, LocalStack, and SAM Lambda emulation. |
 | 📋 [**Tasks & Roadmap**](./TASKS.md) | Active priorities, open roadmap items, and explicit non-goals. |
 | 🚨 [**Production Runbook**](./RUNBOOK.md) | Deployment, logs, incident recovery, and release rollbacks. |
 | 🤖 [**Agent & Contributor Guide**](./AGENTS.md) | Development workflows, mise task commands, code style, and test conventions. |
@@ -29,7 +29,7 @@ MicUp.live solves the "binder problem" for local KJs by turning messy local medi
 |-----------|------------|------|
 | **Frontend** | Vite + Preact | Static SPA hosted via CloudFront & S3 for sub-second global delivery. |
 | **Backend (API)** | Go 1.26 (ARM64) | High-performance API for event management, queues, and metadata sync. |
-| **Database** | DynamoDB | Cost-effective on-demand cloud storage (DynamoDB Local for development). |
+| **Database** | Amazon Aurora DSQL | Serverless PostgreSQL-compatible cloud database with IAM token auth (`postgres:16-alpine` locally). |
 | **Search & Virtualization** | MiniSearch + TanStack Virtual | Instant client-side fuzzy search and smooth scrolling over 50,000+ tracks. |
 | **Singer Repertoire** | Web LocalStorage + Normalized Hash | Universal favorites and pitch memory persisted across venues with zero login wall. |
 | **Alerts & Display** | Web Notifications + Audio + WakeLock | Screen wake lock and OS-level alerts when singers are on deck or up next. |
@@ -80,11 +80,11 @@ mise run web:dev
 Mise creates and activates the ignored `.venv` for `mise run` and `mise exec`.
 OpenAPI and fitness tasks install the pinned Python dependencies automatically.
 
-The backend uses DynamoDB in every environment and defaults to DynamoDB Local at `http://127.0.0.1:8000` for development. LocalStack supplies local S3, SQS, and classic SES APIs, while AWS SAM runs the Lambda entrypoints and event envelopes in Docker. Application email uses the log transport locally because LocalStack Community does not emulate SESv2. All emulator ports are loopback-only and use dummy credentials; no AWS account or cloud resources are required. See [Local production simulation](docs/LOCAL_PRODUCTION_SIMULATION.md).
+The backend uses PostgreSQL 16 locally (`micup-postgres` on `127.0.0.1:5432` via `DATABASE_URL`) and Amazon Aurora DSQL in production (`POSTGRES_DSQL_MODE=true` with IAM token auth via `aws-sdk-go-v2/feature/dsql/auth`, zero static passwords, and no VPC required). LocalStack supplies local S3, SQS, and classic SES APIs, while AWS SAM runs the Lambda entrypoints and event envelopes in Docker. Application email uses the log transport locally because LocalStack Community does not emulate SESv2. All local service ports are loopback-only and use local/dummy credentials; no AWS account or cloud resources are required. See [Local production simulation](docs/LOCAL_PRODUCTION_SIMULATION.md).
 
 ### Database Tests
 
-Run `mise run test` (or `mise run ci:verify` for the full local verification suite). Backend tests run in parallel shards (`test:packages` and `test:dynamo:1..4`), each backed by an ephemeral in-memory DynamoDB Local container that cleans up automatically on exit without touching the persistent development tables. Set `DYNAMO_USE_EXISTING=1` to target `DYNAMO_ENDPOINT` directly.
+Run `mise run test` (or `mise run ci:verify` for the full local verification suite). `mise run test` ensures local PostgreSQL 16 (`micup-postgres` on `127.0.0.1:5432`) is running via `mise run pg:up` and runs the full Go test suite against `DATABASE_URL` in ~8s. Run `mise run test:postgres` to execute only the `internal/store/postgres` and `internal/store/backend` test packages.
 
 ## License
 

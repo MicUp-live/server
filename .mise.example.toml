@@ -6,13 +6,14 @@ aws = { version = "2.36.19", symlink_bins = "true" }
 aws-sam = "1.166.2"
 go = "1.26.0"
 node = "22"
-opentofu = "1.9.4"
+python = "3.14"
+opentofu = "1.12.6"
 watchexec = "2.5.1"
 
 [env]
 APP_ENV="development"
-DYNAMO_ENDPOINT="http://127.0.0.1:8000"
-DYNAMO_TABLE_PREFIX="micup-local-"
+STORE_BACKEND="postgres"
+DATABASE_URL="postgres://micup:micup-local-password@127.0.0.1:5432/micup?sslmode=disable"
 AWS_REGION="us-east-2"
 AWS_EC2_METADATA_DISABLED="true"
 S3_ENDPOINT="http://127.0.0.1:4566"

@@ -13,6 +13,13 @@ Preview the production OpenTofu plan from GitHub Actions with
 `gh workflow run deploy.yml --ref main -f plan_only=true`. Review the completed
 run before applying with `gh workflow run deploy.yml --ref main -f plan_only=false`.
 
+When deploying schema changes to Aurora DSQL (`infra/dsql.tf`), apply the
+embedded schema idempotently with `cmd/pg-migrate` using IAM token auth
+(`STORE_BACKEND=postgres`, `POSTGRES_DSQL_MODE=true`, `DSQL_ENDPOINT=<endpoint>`,
+`AWS_REGION=us-east-2`), which executes one DDL statement at a time and
+rewrites index creation to `ASYNC`. No static database passwords or VPC are
+used.
+
 ## Production smoke flow
 
 Record the date, account, event code, and result after each release.
@@ -47,7 +54,7 @@ Before executing any cross-revision rollback, schema reconciliation, or emergenc
 > **Important (`.github/workflows/deploy.yml` constraint)**: `.github/workflows/deploy.yml` hardcodes `actions/checkout@v5` with `ref: main`. Dispatching `deploy.yml` with `--ref <tag>` or from a non-`main` branch still checks out and deploys `main`—it **cannot** deploy a historical tag directly.
 
 - **Rolling back to a compatible revision**:
-  1. Confirm that no incompatible persisted-state, IAM, or schema boundary was crossed between the target and current release. Prefer forward recovery whenever a release introduced new DynamoDB tables, attributes, or S3 layout invariants.
+  1. Confirm that no incompatible persisted-state, IAM, or schema boundary was crossed between the target and current release. Prefer forward recovery whenever a release introduced new database tables, columns, or S3 layout invariants.
   2. Stop and verify drain of writers using the matrix above if in-flight writes could conflict with the target revision.
   3. Because `deploy.yml` always checks out `main`, either:
      - **Local operator apply from the target tag**: check out the target git tag locally (`git checkout <tag>`), rebuild all artifacts from that working tree (`mise run build:all`; OpenTofu packages `dist/*.zip` directly from the workspace), inspect `tofu -chdir=infra plan`, apply the reviewed plan (`tofu -chdir=infra apply`), and run `mise run deploy:web` to sync `web/dist` to S3 and invalidate CloudFront (`/*`); or
@@ -57,11 +64,11 @@ Before executing any cross-revision rollback, schema reconciliation, or emergenc
 - **Forward-Recovery Procedure (Required Across Any Incompatible State Boundary)**:
   When a regression cannot be safely rolled back without crossing an incompatible persisted-state or schema boundary:
   1. **Contain**: If an active code path is corrupting data, pause the affected writer(s) and verify drain using the matrix above (`put-function-concurrency --reserved-concurrent-executions 0` on `micup-production-api`, `disable-rule` on EventBridge schedules, or `--no-enabled` on SQS event-source mappings).
-  2. **Patch & Verify Forward**: Author a forward fix on top of `HEAD` that preserves all persisted attributes (`deleting*`, `pending_catalog_versions`, `dispatch_*`, `catalog_generation`, `metadata_version`, `auth_epoch`, `catalogs/epochs/*`, and single-table `event-requests`). Verify locally with `mise run ci:verify`.
+  2. **Patch & Verify Forward**: Author a forward fix on top of `HEAD` that preserves all persisted schema state (`deleting*`, `pending_catalog_versions`, `dispatch_*`, `catalog_generation`, `metadata_version`, `auth_epoch`, `catalogs/epochs/*`, and `event_requests`). Verify locally with `mise run ci:verify`.
   3. **Deploy Forward**: Merge the fix to `main` (and tag a new release), preview via `gh workflow run deploy.yml --ref main -f plan_only=true`, and apply via `gh workflow run deploy.yml --ref main -f plan_only=false` (or reviewed local `mise run build:all`, `tofu -chdir=infra apply`, and `mise run deploy:web`).
-  4. **Reconcile & Resume**: Run the applicable idempotent operator recovery commands below (`cmd/import-reconciler`, `cmd/catalog-gc`) against `DYNAMO_TABLE_PREFIX=micup-production-`, re-enable any paused EventBridge/SQS/Lambda triggers, and verify with the production smoke flow.
+  4. **Reconcile & Resume**: Run the applicable idempotent operator recovery commands below (`cmd/import-reconciler`, `cmd/catalog-gc`) against the production Aurora DSQL environment (`STORE_BACKEND=postgres`, `POSTGRES_DSQL_MODE=true`, `DSQL_ENDPOINT=<cluster-endpoint>`, `AWS_REGION=us-east-2`), re-enable any paused EventBridge/SQS/Lambda triggers, and verify with the production smoke flow.
 
-  For local end-to-end recovery rehearsal against DynamoDB Local and LocalStack, run `python3 scripts/local/rehearse-m9-recovery.py`.
+  For local schema bootstrapping against PostgreSQL 16 (`micup-postgres`), run `go run ./cmd/pg-migrate` (or `mise run local:bootstrap`). Note: `scripts/local/rehearse-m9-recovery.py` is the legacy DynamoDB-era rehearsal script and has not been ported to PostgreSQL 16.
 
 ### Rebuild a failed catalog
 
@@ -72,7 +79,7 @@ fully published. Content-addressed catalog builds use exclusive, time-bounded le
 - **Failed build retry**: If a build fails (e.g., transient S3 upload failure), the version is marked `failed`. Re-importing or retrying with identical content exclusively reclaims the failed version, uploads the immutable assets, marks it ready, and points the songbook to it.
 - **Abandoned build reclamation**: If a worker crashes or fails while recording failure status, the build remains in `building` until its lease expires, after which any retry or subsequent build exclusively reclaims the abandoned version.
 - **Concurrent reuse**: When multiple songbooks share identical content, workers wait boundedly for active builds and publish each songbook to the resulting catalog; unfinished builds propagate `ErrBuildInProgress` to SQS for redelivery without dropping jobs.
-- **Publication fencing & supersession**: Competing imports and compactions are fenced with DynamoDB transaction conditions (`ExpectedBaseVersion`, `JobGeneration`). If an older delayed import finishes after a newer one has published, publication rolls back and the worker marks the import failed (`import superseded by newer catalog publication`) to prevent catalog regression. Additive imports and compactions reload the newer active catalog, re-merge, and retry safely (up to 3 attempts).
+- **Publication fencing & supersession**: Competing imports and compactions are fenced inside PostgreSQL / Aurora DSQL transactions (checking `catalog_generation`, `last_import_generation`, and `catalog_version_id` with `FOR UPDATE` fencing and `SQLSTATE 40001` OCC retries). If an older delayed import finishes after a newer one has published, publication rolls back and the worker marks the import failed (`import superseded by newer catalog publication`) to prevent catalog regression. Additive imports and compactions reload the newer active catalog, re-merge, and retry safely (up to 3 attempts).
 
 Inspect `/aws/lambda/micup-production-catalog-worker` for specific worker errors.
 
@@ -81,15 +88,15 @@ Inspect `/aws/lambda/micup-production-catalog-worker` for specific worker errors
 Catalog garbage collection (`catalog-gc`) and user account deletion cascades (`internal/account/service.go`) use a two-phase deletion protocol in `store.CatalogStore` to prevent asset deletion races with concurrent publication:
 - **Physically disjoint epoch namespaces**: Builders write new catalog assets to disjoint epoch namespaces (`catalogs/epochs/<id>/<epochToken>`). If a legacy cleanup worker is delayed during S3 asset deletion of `catalogs/<id>` and its lease expires, a builder reclaims and publishes to the disjoint epoch namespace. When the stale legacy worker resumes, its S3 deletion of `catalogs/<id>` cannot reach `catalogs/epochs/<id>/<epochToken>`. All new assets remain 100% available and intact.
 - **Layout-aware discovery & letter shard protection**: `catalog-gc` prefix discovery distinguishes `catalogs/epochs/` from legacy `catalogs/<id>/` layouts. Internal legacy shard folders like `catalogs/<id>/letters/` are never treated as independent orphan prefixes, and `PurgeOrphanCatalogPrefix` protects active asset descendants, ensuring letter shards of referenced legacy catalogs are preserved.
-- **Reservation lock (`status = deleting`)**: The version is locked in `deleting` status with a time-bounded lease (`LeaseExpiresAt`, default 10 minutes) and unique lease token. Concurrent publications (`PublishCatalogVersion`) are rejected by DynamoDB condition check `#status = :ready`, preventing any live songbook from pointing to assets being deleted.
-- **Orphan prefix exclusion protocol**: For unmapped S3 prefixes without DynamoDB rows, `PurgeOrphanCatalogPrefix` claims an atomic reservation placeholder (`status = deleting`, `attribute_not_exists(id)`) in DynamoDB before deleting S3 objects. This fences concurrent builders (`CreateCatalogVersion` / `PublishCatalogVersion`) from racing with S3 deletion.
-- **Durable detachment in account deletion**: User songbooks are durably deleted in DynamoDB (`DeleteSongbook`) *before* unreferenced catalog versions are purged. If songbook deletion fails on any book, the cascade aborts immediately, leaving all catalog assets and versions intact.
-- **Strongly consistent verification**: Before any S3 objects are deleted, `IsCatalogVersionReferenced` performs a strongly consistent scan on the `songbooks` base table. If any active songbook references the version, the reservation is automatically rolled back to `ready` and S3 assets remain untouched.
+- **Reservation lock (`status = deleting`)**: The version is locked in `deleting` status with a time-bounded lease (`LeaseExpiresAt`, default 10 minutes) and unique lease token. Concurrent publications (`PublishCatalogVersion`) are rejected by transactional status checks (`status = 'ready'`), preventing any live songbook from pointing to assets being deleted.
+- **Orphan prefix exclusion protocol**: For unmapped S3 prefixes without `catalog_versions` rows, `PurgeOrphanCatalogPrefix` claims an atomic reservation placeholder (`status = 'deleting'`, primary-key uniqueness guard returning `ErrCatalogDeletionConflict`) in PostgreSQL / Aurora DSQL before deleting S3 objects. This fences concurrent builders (`CreateCatalogVersion` / `PublishCatalogVersion`) from racing with S3 deletion.
+- **Durable detachment in account deletion**: User songbooks are durably deleted in PostgreSQL / Aurora DSQL (`DeleteSongbook`) *before* unreferenced catalog versions are purged. If songbook deletion fails on any book, the cascade aborts immediately, leaving all catalog assets and versions intact.
+- **Strongly consistent verification**: Before any S3 objects are deleted, `IsCatalogVersionReferenced` queries `songbooks` inside a transaction. If any active songbook references the version, the reservation is automatically rolled back to `ready` and S3 assets remain untouched.
 - **Partial S3 failure or worker interruption**: If S3 object deletion encounters transient failures (network timeouts, AWS errors) or the worker crashes mid-cleanup, the catalog version remains safely quarantined in `deleting` status with its lease token. No live songbook references it, and no publisher can attach to it.
 - **Automatic recovery paths**:
-  1. *Subsequent GC run*: The next scheduled `catalog-gc` invocation scans for candidate versions, including those in `deleting` status with expired leases (`lease_expires_at <= now`). `ReserveCatalogVersionForDeletion` atomically reclaims the lease, re-verifies references, idempotently completes prefix asset purging (S3 `DeleteObjects` is idempotent), and deletes the DynamoDB record.
+  1. *Subsequent GC run*: The next scheduled `catalog-gc` invocation scans for candidate versions, including those in `deleting` status with expired leases (`lease_expires_at <= now`). `ReserveCatalogVersionForDeletion` atomically reclaims the lease, re-verifies references, idempotently completes prefix asset purging (S3 `DeleteObjects` is idempotent), and deletes the `catalog_versions` record.
   2. *Builder reclamation*: If a host re-imports or builds a songbook matching the identical content hash, `catalog.Builder` detects the abandoned `deleting` version with expired lease, reclaims it via `ReclaimCatalogVersion` (resetting status to `building`), rebuilds and re-uploads all assets fresh to a new disjoint epoch prefix (`catalogs/epochs/<id>/<token>`), and publishes the songbook.
-  3. *Stale worker fencing*: A delayed or zombie worker holding an old lease token cannot delete the DynamoDB record once another worker has reclaimed the reservation.
+  3. *Stale worker fencing*: A delayed or zombie worker holding an old lease token cannot delete the `catalog_versions` record once another worker has reclaimed the reservation.
 - **Operational diagnosis**:
   - Filter `/aws/lambda/micup-production-catalog-gc` logs for `[GC ERROR]` or candidate unreferenced catalogs.
   - To inspect candidates without deletion, run `go run ./cmd/catalog-gc --dry-run=true`.
@@ -101,7 +108,7 @@ Songbook imports follow a durable dispatch and worker processing protocol. If an
 
 1. **Unattended Background Reconciliation (`cmd/import-reconciler`)**:
    - The scheduled reconciler Lambda (`micup-production-import-reconciler`) runs every 5 minutes.
-   - It queries DynamoDB for unconfirmed dispatch-ready jobs (`ListDispatchableImportJobs`) with no claim or an expired lease (>5m), acquires an exclusive claim, and dispatches them to SQS without requiring user API reads.
+   - It queries PostgreSQL / Aurora DSQL for unconfirmed dispatch-ready jobs (`ListDispatchableImportJobs`) with no claim or an expired lease (>5m), acquires an exclusive claim, and dispatches them to SQS without requiring user API reads.
 2. **Ambiguous Delivery & Attempt Exhaustion**:
    - Reaching the attempt limit (`maxAttempts = 5`) does NOT delete the job or manifest. Reaching an attempt limit cannot prove no message was delivered (e.g. SQS accepted the message before network timeout).
    - The job remains safely in `pending` or `queued` status with its source manifest preserved in S3 and its record intact, omitted from normal dispatch to prevent runaway SQS loops.
@@ -118,7 +125,7 @@ Account deletion (`DELETE /api/v1/auth/me`) is a multi-step cascade that immedia
 
 1. **Immediate Credential Revocation & Isolation**:
    - Once `BeginAccountDeletion` commits, all normal authentication surfaces (`RequireAuth`, login, session refresh, password reset, email verification, passkey login/registration, and `mk_live_` developer keys) reject the account (`401`/`400`).
-   - Resource and credential writers (auth sessions, passkeys, developer keys, songbooks, events, import jobs, catalog changes) are fenced at commit time in DynamoDB against accounts undergoing deletion.
+   - Resource and credential writers (auth sessions, passkeys, developer keys, songbooks, events, import jobs, catalog changes) are fenced at commit time in PostgreSQL / Aurora DSQL (`FOR UPDATE` checks and `SQLSTATE 40001` OCC retries) against accounts undergoing deletion.
    - Never clear `deleting = true` or restore revoked credentials (`password_hash`, `auth_epoch`, passkeys, or sessions) to recover an interrupted deletion.
    - Any interrupted-request access token fallback must validate explicitly captured initiating authority (`claims.AuthEpoch == user.DeletionAuthEpoch`). Access tokens revoked before deletion (such as pre-password-reset tokens) are strictly rejected (`401`).
 2. **Caller-Driven Retry (`X-Deletion-Token`)**:
@@ -185,7 +192,7 @@ health and the affected route.
 
 ## Operational Rate Limiting & Troubleshooting 429s
 
-MicUp enforces distributed multi-instance rate limits across API Lambda containers via the DynamoDB rate limits table:
+MicUp enforces distributed multi-instance rate limits across API Lambda containers via the `rate_limits` table in Aurora DSQL (PostgreSQL 16 locally):
 
 - **Authentication Endpoints** (`/api/v1/auth/*`): 10 requests / minute per client IP.
 - **Public Endpoints** (Singer requests `/api/v1/events/{id}/requests`, Kiosk PIN check `/api/v1/events/{id}/kiosk/verify-pin`, Join code lookup `/api/v1/events/code/{code}`): 12 requests / minute per client IP.
@@ -197,17 +204,17 @@ MicUp enforces distributed multi-instance rate limits across API Lambda containe
    - `RateLimit-Limit`: Configured threshold (e.g., 10 or 12).
    - `RateLimit-Remaining`: Remaining request allowance (0 when limited).
    - `Retry-After`: Seconds until the 1-minute window resets.
-3. Check the DynamoDB table (`micup-production-rate-limits`):
-   - Key format: `rl:<bucket>:<ip>:<epoch_minute>`.
-   - Items are automatically purged via DynamoDB native TTL on the `ttl` attribute (Unix epoch timestamp).
-4. **Fallback Mode**: If DynamoDB is unreachable, the rate limiter automatically falls back to an in-memory token bucket and logs a warning (`rate limiter falling back to in-memory`). Legitimate traffic is not dropped due to datastore outages.
+3. Check the `rate_limits` table:
+   - Key format (`bucket_key`): `rl#<scope>#<key>#<epoch_minute>`.
+   - Rows record `expires_at` (`TIMESTAMPTZ`) for window expiration.
+4. **Fallback Mode**: If PostgreSQL / Aurora DSQL is unreachable, the rate limiter automatically falls back to an in-memory token bucket and logs a warning (`falling back to in-memory`). Legitimate traffic is not dropped due to datastore outages.
 
 ### Tuning Limits for High-Density Venues
 
 If a high-density venue operates all singer devices through a single shared NAT/Wi-Fi router IP and legitimate patrons encounter 429s during peak submission rushes:
 1. Update Lambda environment variables in OpenTofu (`infra/lambda.tf` / `infra/variables.tf`) or Lambda runtime configuration:
-   - `AUTH_RATE_LIMIT`: default `10/m`
-   - `PUBLIC_REQUEST_LIMIT`: default `12/m`
+   - `AUTH_RATE_LIMIT_PER_MINUTE`: default `10`
+   - `PUBLIC_REQUEST_LIMIT_PER_MINUTE`: default `12`
 2. Apply changes via normal deployment flow (`tofu apply`).
 
 ### Developer-Key Scope Rollout
@@ -228,8 +235,8 @@ user ID, email, and prior `auth_epoch` are required to replace `password_hash`
 and `auth_epoch` together. A successful reset invalidates all earlier reset links
 and bearer access/refresh sessions for that account. Passkeys, developer keys,
 and OpenKJ credentials remain separate authorities. Revoked refresh records
-remain unusable and expire through the existing sessions-table TTL; no session
-scan or new table is required.
+remain unusable and carry an `expires_at` timestamp in `auth_sessions`; no
+session scan or new table is required.
 
 The epoch is an additive optional attribute on users and refresh sessions and an
 optional signed claim on access/reset tokens. Missing epochs on existing records
@@ -288,9 +295,9 @@ commit does not imply that the event commit rolled back.
 
 ## Songbook collaboration rollout and rollback
 
-1. **Additive storage first:** Apply `infra/dynamodb.tf` to create `micup-<env>-songbook-grants` and `micup-<env>-songbook-invitations` before deploying application code that reads or writes them. Existing songbooks and events require no backfill; missing `permissions`, `deletion_confirmed`, and `detached_songbook_name` attributes default to legacy owner-only behavior.
+1. **Additive storage first:** Apply `infra/dsql.tf` and run `cmd/pg-migrate` (`internal/store/postgres/migrations/0001_initial.sql`, which runs DDL one statement at a time with `ASYNC` indexes in DSQL mode) to ensure `songbook_grants` and `songbook_invitations` exist before deploying application code that reads or writes them. Existing songbooks and events require no backfill; missing `permissions`, `deletion_confirmed`, and `detached_songbook_name` fields default to legacy owner-only behavior.
 2. **Deploy API, workers, and web together:** Deploy the Go API, background workers, API Gateway routes (`infra/api-routes.json`), and Preact bundle together so every writer, OpenKJ action, compatibility queue route, and account/songbook deletion cascade enforces cross-owner boundaries before invitations are sent.
 3. **Rollback preserving existing shared shows and grants:**
-   - Do **not** drop `songbook-grants` or `songbook-invitations` during rollback; keep both tables intact so accepted grants and detached-event metadata are preserved.
+   - Do **not** drop `songbook_grants` or `songbook_invitations` during rollback; keep both tables intact so accepted grants and detached-event metadata are preserved.
    - To halt new invitations without disrupting active collaborator shows, disable or remove only the `POST /api/v1/songbooks/{id}/invitations` and `POST /api/v1/songbook-invitations/accept` gateway routes (or revert to a forward-fix build that disables invitation creation while retaining cross-owner event/queue/deletion support).
    - Avoid rolling back to pre-collaboration code once cross-owner events exist, because older `DeleteAccount` and songbook compatibility queue routes assume `event.owner_id == songbook.owner_id`. If an interrupted songbook deletion leaves `deleting = true` and `deletion_confirmed = true`, re-issuing `DELETE /api/v1/songbooks/{id}` as the owner resumes cleanup idempotently.

@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email) WHERE email <> '';
 
 CREATE TABLE IF NOT EXISTS auth_sessions (
-    token_hash BYTEA PRIMARY KEY,
+    token_hash TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     auth_epoch TEXT NOT NULL DEFAULT '',
     expires_at TIMESTAMPTZ NOT NULL
@@ -190,7 +190,7 @@ CREATE TABLE IF NOT EXISTS import_jobs (
     completed_at TIMESTAMPTZ
 );
 
-CREATE INDEX IF NOT EXISTS idx_import_jobs_songbook_created ON import_jobs (songbook_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_import_jobs_songbook_created ON import_jobs (songbook_id, created_at);
 
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,

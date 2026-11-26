@@ -468,13 +468,14 @@ func migrateAuthSessions(ctx context.Context, st *migrationState) (TableStats, e
 		if !ok {
 			return skipRow("")
 		}
-		tokenBytes, err := hex.DecodeString(strings.TrimSpace(it.TokenHash))
+		tokenHex := strings.ToLower(strings.TrimSpace(it.TokenHash))
+		tokenBytes, err := hex.DecodeString(tokenHex)
 		if err != nil || len(tokenBytes) == 0 {
 			return skipRow(fmt.Sprintf("invalid session token_hash %q", it.TokenHash))
 		}
 		if !st.users[it.UserID] {
 			return skipRow(fmt.Sprintf("orphaned auth_session for missing user %q", it.UserID))
 		}
-		return okRow(it.TokenHash, q, []any{tokenBytes, it.UserID, it.AuthEpoch, exp}, nil)
+		return okRow(tokenHex, q, []any{tokenHex, it.UserID, it.AuthEpoch, exp}, nil)
 	})
 }

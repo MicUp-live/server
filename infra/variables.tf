@@ -42,7 +42,7 @@ variable "enable_dsql" {
 variable "store_backend" {
   type        = string
   description = "Active operational persistence backend for Lambdas: dynamo or postgres."
-  default     = "dynamo"
+  default     = "postgres"
 
   validation {
     condition     = contains(["dynamo", "postgres"], var.store_backend)

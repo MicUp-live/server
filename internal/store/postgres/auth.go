@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -225,7 +226,7 @@ func (s *Store) CreateAuthSession(ctx context.Context, session *models.AuthSessi
 		tag, err := tx.Exec(ctx,
 			`INSERT INTO auth_sessions (token_hash, user_id, auth_epoch, expires_at)
 			 SELECT $1, u.id, $3, $4 FROM users u WHERE u.id = $2 AND u.deleting = FALSE`,
-			session.TokenHash, session.UserID, session.AuthEpoch, session.ExpiresAt.UTC(),
+			hex.EncodeToString(session.TokenHash), session.UserID, session.AuthEpoch, session.ExpiresAt.UTC(),
 		)
 		if err != nil {
 			return fmt.Errorf("create auth session: %w", err)
@@ -248,7 +249,7 @@ func (s *Store) ConsumeAuthSession(ctx context.Context, tokenHash []byte) (*mode
 		var sessionUserID, sessionAuthEpoch string
 		err := tx.QueryRow(ctx,
 			`DELETE FROM auth_sessions WHERE token_hash = $1 AND expires_at > $2 RETURNING user_id, auth_epoch`,
-			tokenHash, s.currentTime(),
+			hex.EncodeToString(tokenHash), s.currentTime(),
 		).Scan(&sessionUserID, &sessionAuthEpoch)
 		if isNotFound(err) {
 			return os.ErrNotExist

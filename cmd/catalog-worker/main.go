@@ -24,7 +24,7 @@ import (
 	"micup.live/server/internal/config"
 	"micup.live/server/internal/models"
 	"micup.live/server/internal/store"
-	dynamostore "micup.live/server/internal/store/dynamo"
+	"micup.live/server/internal/store/backend"
 )
 
 type s3ManifestAPI interface {
@@ -39,7 +39,7 @@ type sourceManifest struct {
 
 type workerRuntime struct {
 	cfg      config.Config
-	db       *dynamostore.Store
+	db       backend.Store
 	s3Client *s3.Client
 	sqsQueue string
 	runner   *catalog.Runner
@@ -53,11 +53,7 @@ func initRuntime(ctx context.Context) (*workerRuntime, error) {
 	if strings.TrimSpace(cfg.CatalogBucket) == "" {
 		return nil, fmt.Errorf("CATALOG_ASSET_BUCKET is required")
 	}
-	db, err := dynamostore.New(ctx, dynamostore.Config{
-		Region:      cfg.AWSRegion,
-		Endpoint:    cfg.DynamoEndpoint,
-		TablePrefix: cfg.DynamoPrefix,
-	})
+	db, err := backend.Open(ctx, cfg, false)
 	if err != nil {
 		return nil, err
 	}

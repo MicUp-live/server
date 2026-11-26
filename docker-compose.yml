@@ -47,9 +47,31 @@ services:
       retries: 20
       start_period: 10s
 
+  # PostgreSQL 16 provides local development and test parity for the
+  # Aurora DSQL-compatible relational store (PG1).
+  postgres:
+    image: postgres:16-alpine
+    container_name: micup-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: micup
+      POSTGRES_USER: micup
+      POSTGRES_PASSWORD: micup-local-password
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U micup -d micup"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
 volumes:
   dynamo_data:
   localstack_data:
+  postgres_data:
 
 networks:
   default:

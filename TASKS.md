@@ -69,7 +69,26 @@
 - [x] **Player production API origin**
   - On 2026-11-26 UTC, production queue GET and PATCH preflights returned `204` for `https://player.micup.live` with the expected CORS headers. The shared GitHub Pages origin returned `403`. The API Lambda deployment changed only `CORS_ALLOW_ORIGIN`.
 
-### 3. Pro & White-Glove Feature Roadmap
+### 3. Persistence Migration (PostgreSQL / Aurora DSQL)
+
+- [ ] **PG1 — Migrate operational persistence from DynamoDB to Aurora DSQL-compatible PostgreSQL**
+  - **Intent & scope:** Keep immutable S3/CloudFront song catalogs and client-side MiniSearch unchanged; replace only the operational state layer behind [internal/store/store.go](internal/store/store.go). Develop and test locally against **PostgreSQL 16** (Docker) with a schema and transaction model compatible with **Amazon Aurora DSQL** (`us-east-2`, \$0 idle compute, IAM auth, no VPC).
+  - **Cutover priority:** Prioritize 1:1 behavioral parity first (retain `rate_limits` and `JSONB` favorites on `users` for a smooth cutover). Future KJ and Karaoke Producer metrics can query `event_requests` directly in SQL and normalize favorites later if needed.
+  - **Planned schema (15 tables, DSQL-compatible — app-generated IDs, no triggers, no GIN indexes on `JSONB`, single-statement DDL migrations):**
+    - *Identity & Auth (5):* `users` (`UNIQUE(email)` replacing `identity_claims`), `auth_sessions`, `passkey_credentials`, `webauthn_sessions`, `developer_keys`.
+    - *Songbooks & Catalogs (6):* `catalog_versions`, `songbooks` (`catalog_version_id` FK `ON DELETE RESTRICT`), `songbook_grants`, `songbook_invitations` (partial unique `(songbook_id, recipient_email) WHERE status = 'pending'` replacing invitation slot items), `catalog_changes`, `import_jobs`.
+    - *Live Shows & Queues (3):* `events`, `event_requests` (global PK `id`, eliminating `request-id-index` and restart slot items), `idempotency_records`.
+    - *Rate Limiting (1):* `rate_limits`.
+  - **Phased plan:**
+    1. **Local Postgres + schema:** Add a local `postgres:16` service and `.mise.toml` tasks, plus DSQL-safe SQL migrations (`internal/store/postgres/migrations`).
+    2. **Store implementation:** Implement `internal/store/postgres` (`pgx/v5`) covering all interfaces in [internal/store/store.go](internal/store/store.go), with `SQLSTATE 40001` retry handling for Aurora DSQL OCC and `expires_at > now()` filtering plus cleanup to replace DynamoDB TTL.
+    3. **Test parity:** Port behavioral, concurrency, rollback, and fencing tests to run against local Postgres, add `40001` retry tests, and verify IAM auth + OCC conflicts against a free-tier `us-east-2` Aurora DSQL dev cluster before cloud cutover.
+    4. **Wiring & cutover:** Add a `STORE_BACKEND=postgres|dynamo` switch in `cmd/` and `internal/app`, verify locally end-to-end, and retire `internal/store/dynamo` once cutover is confirmed.
+  - **Local progress, 2026-11-26:** Implemented local PostgreSQL 16 service (`docker-compose.yml`, `.mise.toml` `pg:up`/`pg:down`/`test:postgres`), DSQL-safe 15-table schema (`internal/store/postgres/migrations/0001_initial.sql`), full `internal/store/postgres` (`pgx/v5`, `SQLSTATE 40001` OCC retries, `FOR UPDATE` fencing), unified `internal/store/backend` factory (`STORE_BACKEND=dynamo|postgres`, `DATABASE_URL`, `POSTGRES_DSQL_MODE`), wiring across `main.go` and all 5 worker `cmd/` entrypoints, and 16 PostgreSQL integration tests (including a 110-request atomic reorder/rotation transition test). Zero-context code review caught and resolved `FOR UPDATE` fencing, `25P02` aborted-tx error classification, and standalone write OCC retry gaps.
+  - **Local vignette verification, 2026-11-26:** Ran all 9 Playwright vignettes end-to-end against `http://localhost:3000` backed by `STORE_BACKEND=postgres` + local `import-worker`/`catalog-worker` + LocalStack S3/SQS — all 9 passed with zero high/medium findings (`queue-lifecycle` 10 beats, `fair-priority-rotation` 5, `favorites-and-edge-cases` 8, `kiosk-patron-session` 3, `round-robin-and-admission` 3 [2 expected info], `host-reorder-and-reconnection` 4, `songbook-catalog-management` 5, `songbook-import-management` 5 [1 expected info], `account-privacy` 3).
+  - **DSQL IAM auth & OpenTofu, 2026-11-26:** Added Aurora DSQL IAM token signing (`internal/store/postgres/dsql_auth.go` via `aws-sdk-go-v2/feature/dsql/auth` + `BeforeConnect` + 45m `MaxConnLifetime`), `cmd/pg-migrate`, `cmd/dynamo-to-pg` (idempotent FK-ordered DynamoDB→Postgres/DSQL migration CLI with `--dry-run`, expired-TTL/slot filtering, `40001` retries, and `TestMigrateEndToEnd` verified locally between DynamoDB Local and PostgreSQL 16), and opt-in `infra/dsql.tf` (`enable_dsql` default `false`, `store_backend` default `"dynamo"`, `dsql:DbConnectAdmin`/`dsql:DbConnect` IAM policies on all 6 Lambda roles, `dsql_endpoint`/`dsql_cluster_arn` outputs). Remaining: provision Aurora DSQL via GitHub Actions (`enable_dsql=true`), run `cmd/pg-migrate` + `cmd/dynamo-to-pg` against live AWS, verify, and cut over (`store_backend=postgres`) before retiring DynamoDB.
+
+### 4. Pro & White-Glove Feature Roadmap
 
 Maintained privately and not tracked in this repository (local `.private/PRO_ROADMAP.md`, gitignored).
 
@@ -78,7 +97,7 @@ Maintained privately and not tracked in this repository (local `.private/PRO_ROA
 ## Explicit Architectural Non-Goals
 
 - **No outbound webhooks for live queue synchronization:** Venue hosters run behind NAT/firewalls; monotonic conditional polling (`?since=v` returning `204 No Content`) is resilient and <\$0.01/show.
-- **No migration from DynamoDB to PostgreSQL:** DynamoDB satisfies all operational, transactional, and scaling requirements with zero idle cost.
+- **No always-on provisioned SQL instances for idle workloads:** Operational relational persistence targets scale-to-zero / consumption-priced AWS-native serverless SQL (Aurora DSQL, see PG1) rather than 24/7 provisioned RDS compute.
 - **No OpenSearch:** Client-side Web Worker search (`search.json.gz` + MiniSearch) handles 50,000+ songs off the main thread at \$0 server cost.
 - **No serving full catalogs from Lambda:** Large catalogs remain immutable, versioned S3 assets delivered via CloudFront.
 - **No AWS WAF at current scale:** Rate limits and validation remain in application code for cost efficiency.

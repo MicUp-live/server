@@ -18,7 +18,7 @@ import (
 	"micup.live/server/internal/models"
 	"micup.live/server/internal/reference"
 	"micup.live/server/internal/store"
-	dynamostore "micup.live/server/internal/store/dynamo"
+	"micup.live/server/internal/store/backend"
 )
 
 func main() {
@@ -51,18 +51,9 @@ func main() {
 }
 
 func loadStore(cfg config.Config) (app.Dependencies, func(), error) {
-	s, err := dynamostore.New(context.Background(), dynamostore.Config{
-		Region:      cfg.AWSRegion,
-		Endpoint:    cfg.DynamoEndpoint,
-		TablePrefix: cfg.DynamoPrefix,
-	})
+	s, err := backend.Open(context.Background(), cfg, cfg.Environment == config.Development)
 	if err != nil {
 		return app.Dependencies{}, func() {}, err
-	}
-	if cfg.Environment == config.Development {
-		if err := s.EnsureTables(context.Background()); err != nil {
-			return app.Dependencies{}, func() {}, err
-		}
 	}
 
 	var emailSender email.Sender = email.NewLogSender()

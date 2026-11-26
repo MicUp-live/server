@@ -15,7 +15,7 @@ import (
 	"micup.live/server/internal/config"
 	"micup.live/server/internal/importjob"
 	"micup.live/server/internal/models"
-	dynamostore "micup.live/server/internal/store/dynamo"
+	"micup.live/server/internal/store/backend"
 )
 
 type reconcilerService interface {
@@ -29,13 +29,9 @@ func initService(ctx context.Context) (*catalog.Service, func(), error) {
 	if err != nil {
 		return nil, func() {}, fmt.Errorf("load environment: %w", err)
 	}
-	db, err := dynamostore.New(ctx, dynamostore.Config{
-		Region:      cfg.AWSRegion,
-		Endpoint:    cfg.DynamoEndpoint,
-		TablePrefix: cfg.DynamoPrefix,
-	})
+	db, err := backend.Open(ctx, cfg, false)
 	if err != nil {
-		return nil, func() {}, fmt.Errorf("connect to dynamo: %w", err)
+		return nil, func() {}, fmt.Errorf("connect to store: %w", err)
 	}
 	awsCfg, err := awsclient.Load(ctx, awsclient.Config{
 		Region:         cfg.AWSRegion,

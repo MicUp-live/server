@@ -386,7 +386,7 @@ resource "aws_lambda_function" "api" {
   timeout     = 29
 
   environment {
-    variables = {
+    variables = merge({
       APP_ENV                  = "production"
       PUBLIC_BASE_URL          = "https://${var.domain_name}"
       WEBAUTHN_RP_ID           = var.domain_name
@@ -399,7 +399,7 @@ resource "aws_lambda_function" "api" {
       IMPORT_JOB_QUEUE_URL     = aws_sqs_queue.import_jobs.url
       DEVELOPER_KEY_SCOPE_MODE = var.developer_key_scope_mode
       PORT                     = "8080"
-    }
+    }, local.dsql_lambda_env)
   }
 
   depends_on = [

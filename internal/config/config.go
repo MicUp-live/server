@@ -19,6 +19,10 @@ const (
 	DeveloperKeyScopeReport = "report"
 	// DeveloperKeyScopeEnforce rejects developer-key requests missing a scope.
 	DeveloperKeyScopeEnforce = "enforce"
+	// StoreBackendDynamo selects the DynamoDB persistence backend (default).
+	StoreBackendDynamo = "dynamo"
+	// StoreBackendPostgres selects the PostgreSQL / Aurora DSQL persistence backend.
+	StoreBackendPostgres = "postgres"
 )
 
 var developmentOrigins = []string{
@@ -37,6 +41,11 @@ type Config struct {
 	// that service has an explicit endpoint configured. It is intended for
 	// local emulators such as LocalStack.
 	AWSEndpoint           string
+	StoreBackend          string
+	DatabaseURL           string
+	PostgresDSQLMode      bool
+	DSQLEndpoint          string
+	DSQLUser              string
 	DynamoEndpoint        string
 	S3Endpoint            string
 	SQSEndpoint           string
@@ -80,6 +89,11 @@ func loadBaseEnvironment() Config {
 		AuthSecret:            os.Getenv("AUTH_SECRET"),
 		AWSRegion:             strings.TrimSpace(os.Getenv("AWS_REGION")),
 		AWSEndpoint:           strings.TrimRight(strings.TrimSpace(os.Getenv("AWS_ENDPOINT_URL")), "/"),
+		StoreBackend:          strings.ToLower(strings.TrimSpace(os.Getenv("STORE_BACKEND"))),
+		DatabaseURL:           strings.TrimSpace(os.Getenv("DATABASE_URL")),
+		PostgresDSQLMode:      strings.EqualFold(strings.TrimSpace(os.Getenv("POSTGRES_DSQL_MODE")), "true"),
+		DSQLEndpoint:          strings.TrimSpace(os.Getenv("DSQL_ENDPOINT")),
+		DSQLUser:              strings.TrimSpace(os.Getenv("DSQL_USER")),
 		DynamoEndpoint:        endpointEnv("DYNAMO_ENDPOINT"),
 		S3Endpoint:            endpointEnv("S3_ENDPOINT"),
 		SQSEndpoint:           endpointEnv("SQS_ENDPOINT"),
@@ -110,6 +124,9 @@ func loadBaseEnvironment() Config {
 	}
 	if cfg.DeveloperKeyScopeMode == "" {
 		cfg.DeveloperKeyScopeMode = DeveloperKeyScopeReport
+	}
+	if cfg.StoreBackend == "" {
+		cfg.StoreBackend = StoreBackendDynamo
 	}
 	if cfg.AWSRegion == "" {
 		cfg.AWSRegion = "us-east-2"
@@ -143,6 +160,12 @@ func loadBaseEnvironment() Config {
 func (c Config) ValidateWorker() error {
 	if c.Environment != Development && c.Environment != Production {
 		return fmt.Errorf("APP_ENV must be %q or %q", Development, Production)
+	}
+	if c.StoreBackend != StoreBackendDynamo && c.StoreBackend != StoreBackendPostgres {
+		return fmt.Errorf("STORE_BACKEND must be %q or %q", StoreBackendDynamo, StoreBackendPostgres)
+	}
+	if c.StoreBackend == StoreBackendPostgres && c.DatabaseURL == "" && !(c.PostgresDSQLMode && c.DSQLEndpoint != "") {
+		return errors.New("DATABASE_URL or DSQL_ENDPOINT (with POSTGRES_DSQL_MODE=true) is required when STORE_BACKEND=postgres")
 	}
 	if c.AWSRegion == "" {
 		return errors.New("AWS_REGION is required for DynamoDB")

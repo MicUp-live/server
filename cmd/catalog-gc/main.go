@@ -20,12 +20,12 @@ import (
 	"micup.live/server/internal/config"
 	"micup.live/server/internal/models"
 	"micup.live/server/internal/store"
-	dynamostore "micup.live/server/internal/store/dynamo"
+	"micup.live/server/internal/store/backend"
 )
 
 type gcRuntime struct {
 	bucket string
-	store  *dynamostore.Store
+	store  backend.Store
 	s3c    *s3.Client
 }
 
@@ -37,13 +37,9 @@ func initRuntime(ctx context.Context) (*gcRuntime, error) {
 	if cfg.CatalogBucket == "" {
 		return nil, fmt.Errorf("CATALOG_ASSET_BUCKET is required")
 	}
-	s, err := dynamostore.New(ctx, dynamostore.Config{
-		Region:      cfg.AWSRegion,
-		Endpoint:    cfg.DynamoEndpoint,
-		TablePrefix: cfg.DynamoPrefix,
-	})
+	s, err := backend.Open(ctx, cfg, false)
 	if err != nil {
-		return nil, fmt.Errorf("connect to dynamo: %w", err)
+		return nil, fmt.Errorf("connect to store: %w", err)
 	}
 	awsCfg, err := awsclient.Load(ctx, awsclient.Config{
 		Region:         cfg.AWSRegion,

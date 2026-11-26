@@ -10,11 +10,11 @@ import (
 	"micup.live/server/internal/awsclient"
 	"micup.live/server/internal/catalog"
 	"micup.live/server/internal/config"
-	dynamostore "micup.live/server/internal/store/dynamo"
+	"micup.live/server/internal/store/backend"
 )
 
 type dispatcherRuntime struct {
-	db    *dynamostore.Store
+	db    backend.Store
 	queue catalog.JobQueue
 }
 
@@ -23,11 +23,7 @@ func initRuntime(ctx context.Context) (*dispatcherRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := dynamostore.New(ctx, dynamostore.Config{
-		Region:      cfg.AWSRegion,
-		Endpoint:    cfg.DynamoEndpoint,
-		TablePrefix: cfg.DynamoPrefix,
-	})
+	db, err := backend.Open(ctx, cfg, false)
 	if err != nil {
 		return nil, err
 	}

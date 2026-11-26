@@ -22,7 +22,7 @@ import (
 	"micup.live/server/internal/importjob"
 	"micup.live/server/internal/models"
 	"micup.live/server/internal/store"
-	dynamostore "micup.live/server/internal/store/dynamo"
+	"micup.live/server/internal/store/backend"
 )
 
 type manifest struct {
@@ -36,7 +36,7 @@ type s3ManifestReader interface {
 
 type workerRuntime struct {
 	cfg  config.Config
-	db   *dynamostore.Store
+	db   backend.Store
 	s3c  *s3.Client
 	sqsc *sqs.Client
 	jobs catalog.JobQueue
@@ -47,11 +47,7 @@ func initRuntime(ctx context.Context) (*workerRuntime, error) {
 	if err != nil {
 		return nil, err
 	}
-	db, err := dynamostore.New(ctx, dynamostore.Config{
-		Region:      cfg.AWSRegion,
-		Endpoint:    cfg.DynamoEndpoint,
-		TablePrefix: cfg.DynamoPrefix,
-	})
+	db, err := backend.Open(ctx, cfg, false)
 	if err != nil {
 		return nil, err
 	}

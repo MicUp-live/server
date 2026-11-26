@@ -45,11 +45,11 @@ resource "aws_lambda_function" "catalog_worker" {
   timeout          = 900
 
   environment {
-    variables = {
+    variables = merge({
       APP_ENV              = "production"
       DYNAMO_TABLE_PREFIX  = local.dynamo_prefix
       CATALOG_ASSET_BUCKET = aws_s3_bucket.app.id
-    }
+    }, local.dsql_lambda_env)
   }
 
   depends_on = [aws_cloudwatch_log_group.catalog_worker, aws_iam_role_policy.catalog_worker_policy]
@@ -77,12 +77,12 @@ resource "aws_lambda_function" "import_worker" {
   memory_size      = 1024
   timeout          = 900
   environment {
-    variables = {
+    variables = merge({
       APP_ENV                 = "production"
       DYNAMO_TABLE_PREFIX     = local.dynamo_prefix
       CATALOG_ASSET_BUCKET    = aws_s3_bucket.app.id
       CATALOG_BUILD_QUEUE_URL = aws_sqs_queue.catalog_build.url
-    }
+    }, local.dsql_lambda_env)
   }
   depends_on = [aws_cloudwatch_log_group.import_worker, aws_iam_role_policy.import_worker_policy]
 }
@@ -109,11 +109,11 @@ resource "aws_lambda_function" "compaction_dispatcher" {
   memory_size      = 256
   timeout          = 60
   environment {
-    variables = {
+    variables = merge({
       APP_ENV                 = "production"
       DYNAMO_TABLE_PREFIX     = local.dynamo_prefix
       CATALOG_BUILD_QUEUE_URL = aws_sqs_queue.catalog_build.url
-    }
+    }, local.dsql_lambda_env)
   }
   depends_on = [aws_cloudwatch_log_group.compaction_dispatcher, aws_iam_role_policy.compaction_dispatcher_policy]
 }
@@ -153,11 +153,11 @@ resource "aws_lambda_function" "import_reconciler" {
   memory_size      = 256
   timeout          = 60
   environment {
-    variables = {
+    variables = merge({
       APP_ENV              = "production"
       DYNAMO_TABLE_PREFIX  = local.dynamo_prefix
       IMPORT_JOB_QUEUE_URL = aws_sqs_queue.import_jobs.url
-    }
+    }, local.dsql_lambda_env)
   }
   depends_on = [aws_cloudwatch_log_group.import_reconciler, aws_iam_role_policy.import_reconciler_policy]
 }

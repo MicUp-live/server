@@ -19,13 +19,13 @@ resource "aws_lambda_function" "catalog_gc" {
   timeout          = 120
 
   environment {
-    variables = {
+    variables = merge({
       APP_ENV              = "production"
       DYNAMO_TABLE_PREFIX  = local.dynamo_prefix
       CATALOG_ASSET_BUCKET = aws_s3_bucket.app.id
       GC_GRACE_PERIOD      = "24h"
       GC_DRY_RUN           = "false"
-    }
+    }, local.dsql_lambda_env)
   }
 
   depends_on = [aws_cloudwatch_log_group.catalog_gc, aws_iam_role_policy.catalog_gc_policy]

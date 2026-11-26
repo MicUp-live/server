@@ -58,11 +58,10 @@ func initRuntime(ctx context.Context) (*workerRuntime, error) {
 		return nil, err
 	}
 	awsCfg, err := awsclient.Load(ctx, awsclient.Config{
-		Region:         cfg.AWSRegion,
-		DynamoEndpoint: cfg.DynamoEndpoint,
-		S3Endpoint:     cfg.S3Endpoint,
-		SQSEndpoint:    cfg.SQSEndpoint,
-		SESEndpoint:    cfg.SESEndpoint,
+		Region:      cfg.AWSRegion,
+		S3Endpoint:  cfg.S3Endpoint,
+		SQSEndpoint: cfg.SQSEndpoint,
+		SESEndpoint: cfg.SESEndpoint,
 	})
 	if err != nil {
 		_ = db.Close()
@@ -149,11 +148,10 @@ func main() {
 			log.Fatal("CATALOG_BUILD_QUEUE_URL is required to poll")
 		}
 		awsCfg, err := awsclient.Load(ctx, awsclient.Config{
-			Region:         rt.cfg.AWSRegion,
-			DynamoEndpoint: rt.cfg.DynamoEndpoint,
-			S3Endpoint:     rt.cfg.S3Endpoint,
-			SQSEndpoint:    rt.cfg.SQSEndpoint,
-			SESEndpoint:    rt.cfg.SESEndpoint,
+			Region:      rt.cfg.AWSRegion,
+			S3Endpoint:  rt.cfg.S3Endpoint,
+			SQSEndpoint: rt.cfg.SQSEndpoint,
+			SESEndpoint: rt.cfg.SESEndpoint,
 		})
 		if err != nil {
 			log.Fatalf("load aws config: %v", err)

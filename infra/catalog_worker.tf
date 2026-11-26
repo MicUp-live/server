@@ -47,7 +47,6 @@ resource "aws_lambda_function" "catalog_worker" {
   environment {
     variables = merge({
       APP_ENV              = "production"
-      DYNAMO_TABLE_PREFIX  = local.dynamo_prefix
       CATALOG_ASSET_BUCKET = aws_s3_bucket.app.id
     }, local.dsql_lambda_env)
   }
@@ -79,7 +78,6 @@ resource "aws_lambda_function" "import_worker" {
   environment {
     variables = merge({
       APP_ENV                 = "production"
-      DYNAMO_TABLE_PREFIX     = local.dynamo_prefix
       CATALOG_ASSET_BUCKET    = aws_s3_bucket.app.id
       CATALOG_BUILD_QUEUE_URL = aws_sqs_queue.catalog_build.url
     }, local.dsql_lambda_env)
@@ -111,7 +109,6 @@ resource "aws_lambda_function" "compaction_dispatcher" {
   environment {
     variables = merge({
       APP_ENV                 = "production"
-      DYNAMO_TABLE_PREFIX     = local.dynamo_prefix
       CATALOG_BUILD_QUEUE_URL = aws_sqs_queue.catalog_build.url
     }, local.dsql_lambda_env)
   }
@@ -155,7 +152,6 @@ resource "aws_lambda_function" "import_reconciler" {
   environment {
     variables = merge({
       APP_ENV              = "production"
-      DYNAMO_TABLE_PREFIX  = local.dynamo_prefix
       IMPORT_JOB_QUEUE_URL = aws_sqs_queue.import_jobs.url
     }, local.dsql_lambda_env)
   }

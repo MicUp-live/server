@@ -33,23 +33,6 @@ variable "developer_key_scope_mode" {
   }
 }
 
-variable "enable_dsql" {
-  type        = bool
-  description = "Provision the Amazon Aurora DSQL cluster and attach IAM connect policies to Lambda roles."
-  default     = true
-}
-
-variable "store_backend" {
-  type        = string
-  description = "Active operational persistence backend for Lambdas: dynamo or postgres."
-  default     = "postgres"
-
-  validation {
-    condition     = contains(["dynamo", "postgres"], var.store_backend)
-    error_message = "store_backend must be dynamo or postgres."
-  }
-}
-
 variable "dsql_deletion_protection" {
   type        = bool
   description = "Enable deletion protection on the Aurora DSQL cluster."

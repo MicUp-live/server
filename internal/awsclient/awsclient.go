@@ -18,11 +18,10 @@ import (
 // Empty endpoints preserve the SDK's normal AWS endpoint and credential
 // resolution behavior.
 type Config struct {
-	Region         string
-	DynamoEndpoint string
-	S3Endpoint     string
-	SQSEndpoint    string
-	SESEndpoint    string
+	Region      string
+	S3Endpoint  string
+	SQSEndpoint string
+	SESEndpoint string
 }
 
 // Load loads an AWS SDK configuration. When any local endpoint is configured,
@@ -43,7 +42,7 @@ func Load(ctx context.Context, cfg Config) (aws.Config, error) {
 }
 
 func hasEndpoint(cfg Config) bool {
-	return firstEndpoint(cfg.DynamoEndpoint, cfg.S3Endpoint, cfg.SQSEndpoint, cfg.SESEndpoint) != ""
+	return firstEndpoint(cfg.S3Endpoint, cfg.SQSEndpoint, cfg.SESEndpoint) != ""
 }
 
 // NewS3 creates an S3 client. Local S3-compatible services generally do not

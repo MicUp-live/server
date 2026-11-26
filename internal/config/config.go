@@ -19,9 +19,7 @@ const (
 	DeveloperKeyScopeReport = "report"
 	// DeveloperKeyScopeEnforce rejects developer-key requests missing a scope.
 	DeveloperKeyScopeEnforce = "enforce"
-	// StoreBackendDynamo selects the DynamoDB persistence backend (default).
-	StoreBackendDynamo = "dynamo"
-	// StoreBackendPostgres selects the PostgreSQL / Aurora DSQL persistence backend.
+	// StoreBackendPostgres selects the PostgreSQL / Aurora DSQL persistence backend (default).
 	StoreBackendPostgres = "postgres"
 )
 
@@ -46,12 +44,10 @@ type Config struct {
 	PostgresDSQLMode      bool
 	DSQLEndpoint          string
 	DSQLUser              string
-	DynamoEndpoint        string
 	S3Endpoint            string
 	SQSEndpoint           string
 	SESEndpoint           string
 	EmailTransport        string
-	DynamoPrefix          string
 	CatalogBucket         string
 	CatalogBuildQueueURL  string
 	ImportJobQueueURL     string
@@ -94,12 +90,10 @@ func loadBaseEnvironment() Config {
 		PostgresDSQLMode:      strings.EqualFold(strings.TrimSpace(os.Getenv("POSTGRES_DSQL_MODE")), "true"),
 		DSQLEndpoint:          strings.TrimSpace(os.Getenv("DSQL_ENDPOINT")),
 		DSQLUser:              strings.TrimSpace(os.Getenv("DSQL_USER")),
-		DynamoEndpoint:        endpointEnv("DYNAMO_ENDPOINT"),
 		S3Endpoint:            endpointEnv("S3_ENDPOINT"),
 		SQSEndpoint:           endpointEnv("SQS_ENDPOINT"),
 		SESEndpoint:           endpointEnv("SES_ENDPOINT"),
 		EmailTransport:        strings.ToLower(strings.TrimSpace(os.Getenv("EMAIL_TRANSPORT"))),
-		DynamoPrefix:          strings.TrimSpace(os.Getenv("DYNAMO_TABLE_PREFIX")),
 		CatalogBucket:         strings.TrimSpace(os.Getenv("CATALOG_ASSET_BUCKET")),
 		CatalogBuildQueueURL:  strings.TrimSpace(os.Getenv("CATALOG_BUILD_QUEUE_URL")),
 		ImportJobQueueURL:     strings.TrimSpace(os.Getenv("IMPORT_JOB_QUEUE_URL")),
@@ -126,14 +120,12 @@ func loadBaseEnvironment() Config {
 		cfg.DeveloperKeyScopeMode = DeveloperKeyScopeReport
 	}
 	if cfg.StoreBackend == "" {
-		cfg.StoreBackend = StoreBackendDynamo
+		cfg.StoreBackend = StoreBackendPostgres
 	}
 	if cfg.AWSRegion == "" {
 		cfg.AWSRegion = "us-east-2"
 	}
 	// A service-specific endpoint takes precedence over the shared endpoint.
-	// DynamoDB is intentionally independent: the normal local setup uses
-	// DynamoDB Local on port 8000 while LocalStack handles the other services.
 	// Keep the resolved values explicit so callers do not each implement their
 	// own environment-variable precedence rules.
 	if cfg.S3Endpoint == "" {
@@ -144,9 +136,6 @@ func loadBaseEnvironment() Config {
 	}
 	if cfg.SESEndpoint == "" {
 		cfg.SESEndpoint = cfg.AWSEndpoint
-	}
-	if cfg.DynamoPrefix == "" {
-		cfg.DynamoPrefix = "micup-" + cfg.Environment + "-"
 	}
 	if origins := os.Getenv("CORS_ALLOW_ORIGIN"); origins != "" {
 		cfg.AllowedOrigins = splitOrigins(origins)
@@ -161,14 +150,14 @@ func (c Config) ValidateWorker() error {
 	if c.Environment != Development && c.Environment != Production {
 		return fmt.Errorf("APP_ENV must be %q or %q", Development, Production)
 	}
-	if c.StoreBackend != StoreBackendDynamo && c.StoreBackend != StoreBackendPostgres {
-		return fmt.Errorf("STORE_BACKEND must be %q or %q", StoreBackendDynamo, StoreBackendPostgres)
+	if c.StoreBackend != StoreBackendPostgres {
+		return fmt.Errorf("STORE_BACKEND must be %q", StoreBackendPostgres)
 	}
-	if c.StoreBackend == StoreBackendPostgres && c.DatabaseURL == "" && !(c.PostgresDSQLMode && c.DSQLEndpoint != "") {
-		return errors.New("DATABASE_URL or DSQL_ENDPOINT (with POSTGRES_DSQL_MODE=true) is required when STORE_BACKEND=postgres")
+	if c.DatabaseURL == "" && !(c.PostgresDSQLMode && c.DSQLEndpoint != "") {
+		return errors.New("DATABASE_URL or DSQL_ENDPOINT (with POSTGRES_DSQL_MODE=true) is required")
 	}
 	if c.AWSRegion == "" {
-		return errors.New("AWS_REGION is required for DynamoDB")
+		return errors.New("AWS_REGION is required")
 	}
 	if c.QueueRetentionDays < 1 || c.QueueRetentionDays > 365 {
 		return errors.New("QUEUE_RETENTION_DAYS must be between 1 and 365")

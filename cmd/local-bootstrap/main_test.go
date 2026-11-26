@@ -2,31 +2,37 @@ package main
 
 import "testing"
 
-func TestRequireLocalEndpoint(t *testing.T) {
+func TestRequireLocalDatabaseURL(t *testing.T) {
 	t.Parallel()
 
-	for _, endpoint := range []string{
-		"http://127.0.0.1:8000",
-		"http://localhost:8000",
-		"http://[::1]:8000",
-		"http://dynamodb:8000",
+	for _, dsn := range []string{
+		"postgres://micup:local@127.0.0.1:5432/micup?sslmode=disable",
+		"postgres://micup:local@localhost:5432/micup?sslmode=disable",
+		"postgresql://micup:local@[::1]:5432/micup?sslmode=disable",
+		"postgres://micup:local@postgres:5432/micup?sslmode=disable",
 	} {
-		endpoint := endpoint
-		t.Run(endpoint, func(t *testing.T) {
+		dsn := dsn
+		t.Run(dsn, func(t *testing.T) {
 			t.Parallel()
-			if err := requireLocalEndpoint(endpoint); err != nil {
-				t.Fatalf("requireLocalEndpoint(%q): %v", endpoint, err)
+			if err := requireLocalDatabaseURL(dsn); err != nil {
+				t.Fatalf("requireLocalDatabaseURL(%q): %v", dsn, err)
 			}
 		})
 	}
 }
 
-func TestRequireLocalEndpointRejectsAWSAndEmptyEndpoints(t *testing.T) {
+func TestRequireLocalDatabaseURLRejectsRemoteAndEmptyDSNs(t *testing.T) {
 	t.Parallel()
 
-	for _, endpoint := range []string{"", "https://dynamodb.us-east-2.amazonaws.com"} {
-		if err := requireLocalEndpoint(endpoint); err == nil {
-			t.Fatalf("requireLocalEndpoint(%q) succeeded", endpoint)
+	for _, dsn := range []string{
+		"",
+		"postgres://micup:prod@prod-db.us-east-2.rds.amazonaws.com:5432/micup",
+		"postgres://admin@abc.dsql.us-east-2.on.aws:5432/postgres",
+		"https://127.0.0.1:5432/micup",
+		"host=localhost dbname=micup",
+	} {
+		if err := requireLocalDatabaseURL(dsn); err == nil {
+			t.Fatalf("requireLocalDatabaseURL(%q) succeeded", dsn)
 		}
 	}
 }

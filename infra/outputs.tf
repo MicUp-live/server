@@ -39,11 +39,11 @@ output "lambda_function_name" {
 }
 
 output "dsql_cluster_arn" {
-  description = "Aurora DSQL cluster ARN (empty when enable_dsql is false)"
+  description = "Aurora DSQL cluster ARN"
   value       = local.dsql_cluster_arn
 }
 
 output "dsql_endpoint" {
-  description = "Aurora DSQL cluster endpoint hostname (empty when enable_dsql is false)"
+  description = "Aurora DSQL cluster endpoint hostname"
   value       = local.dsql_endpoint
 }

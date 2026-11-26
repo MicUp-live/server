@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"os"
 	"testing"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 	"micup.live/server/internal/config"
 	"micup.live/server/internal/handlers"
 	"micup.live/server/internal/models"
-	"micup.live/server/internal/store/dynamo"
+	pgstore "micup.live/server/internal/store/postgres"
 )
 
 const crossAdapterSigningSecret = "contract-cross-signing-secret-at-least-32-bytes"
@@ -42,7 +41,7 @@ func makeHostSessionToken(userID, authEpoch string, secret []byte) string {
 
 type crossAdapterHarness struct {
 	ctx           context.Context
-	dynStore      *dynamo.Store
+	pgStore       *pgstore.Store
 	router        http.Handler
 	hostA         *models.User
 	eventA        *models.Event
@@ -56,37 +55,12 @@ type crossAdapterHarness struct {
 	openkjKeyB    string
 }
 
-// setupCrossAdapterTestDynamo initializes DynamoDB Local with isolated tables,
+// setupCrossAdapterTestPostgres initializes PostgreSQL with an isolated schema,
 // registers cleanup, and provisions two distinct host tenants (Host A and Host B)
 // with songbooks, events, OpenKJ integration keys, scoped developer keys, and session tokens.
-func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
+func setupCrossAdapterTestPostgres(t *testing.T) *crossAdapterHarness {
 	t.Helper()
-	endpoint := os.Getenv("DYNAMO_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("DYNAMO_ENDPOINT is not set; skipping DynamoDB Local cross-adapter contract test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	t.Cleanup(cancel)
-
-	prefix := fmt.Sprintf("contract-cross-%d-%s-", time.Now().UnixNano(), uuid.NewString()[:8])
-	dynStore, err := dynamo.New(ctx, dynamo.Config{
-		Region:      "us-east-1",
-		Endpoint:    endpoint,
-		TablePrefix: prefix,
-	})
-	if err != nil {
-		t.Fatalf("create dynamo store: %v", err)
-	}
-	registerFixtureDynamoCleanup(t, endpoint, prefix)
-	t.Cleanup(func() {
-		if err := dynStore.Close(); err != nil {
-			t.Errorf("close dynamo store: %v", err)
-		}
-	})
-	if err := dynStore.EnsureTables(ctx); err != nil {
-		t.Fatalf("ensure dynamo tables: %v", err)
-	}
+	ctx, pgStore := openIsolatedContractPostgresStore(t)
 
 	now := time.Now().UTC()
 
@@ -98,7 +72,7 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 		IsHost:      true,
 		AuthEpoch:   "epoch_host_01",
 	}
-	if err := dynStore.CreateUser(ctx, hostA); err != nil {
+	if err := pgStore.CreateUser(ctx, hostA); err != nil {
 		t.Fatalf("create host A: %v", err)
 	}
 	sbA := &models.Songbook{
@@ -108,7 +82,7 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 		Name:     "Host A Songbook",
 		IsPublic: true,
 	}
-	if err := dynStore.CreateSongbook(ctx, sbA); err != nil {
+	if err := pgStore.CreateSongbook(ctx, sbA); err != nil {
 		t.Fatalf("create songbook A: %v", err)
 	}
 	openkjKeyA := models.GenerateOpenKJKey("evt_cross_01")
@@ -126,7 +100,7 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if err := dynStore.CreateEvent(ctx, eventA); err != nil {
+	if err := pgStore.CreateEvent(ctx, eventA); err != nil {
 		t.Fatalf("create event A: %v", err)
 	}
 
@@ -142,7 +116,7 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 			handlers.DeveloperScopeCatalogsWrite,
 		},
 	} {
-		if err := dynStore.CreateDeveloperKey(ctx, rawKey, &models.DeveloperKey{
+		if err := pgStore.CreateDeveloperKey(ctx, rawKey, &models.DeveloperKey{
 			Name:         rawKey,
 			KeyPrefix:    rawKey[:12],
 			OwnerID:      hostA.ID,
@@ -162,7 +136,7 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 		IsHost:      true,
 		AuthEpoch:   "epoch_host_02",
 	}
-	if err := dynStore.CreateUser(ctx, hostB); err != nil {
+	if err := pgStore.CreateUser(ctx, hostB); err != nil {
 		t.Fatalf("create host B: %v", err)
 	}
 	sbB := &models.Songbook{
@@ -172,7 +146,7 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 		Name:     "Host B Songbook",
 		IsPublic: true,
 	}
-	if err := dynStore.CreateSongbook(ctx, sbB); err != nil {
+	if err := pgStore.CreateSongbook(ctx, sbB); err != nil {
 		t.Fatalf("create songbook B: %v", err)
 	}
 	openkjKeyB := models.GenerateOpenKJKey("evt_cross_02")
@@ -190,12 +164,12 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 		CreatedAt:      now,
 		UpdatedAt:      now,
 	}
-	if err := dynStore.CreateEvent(ctx, eventB); err != nil {
+	if err := pgStore.CreateEvent(ctx, eventB); err != nil {
 		t.Fatalf("create event B: %v", err)
 	}
 
 	// Developer key for Host B
-	if err := dynStore.CreateDeveloperKey(ctx, "mk_live_other_write", &models.DeveloperKey{
+	if err := pgStore.CreateDeveloperKey(ctx, "mk_live_other_write", &models.DeveloperKey{
 		Name:         "mk_live_other_write",
 		KeyPrefix:    "mk_live_othe",
 		OwnerID:      hostB.ID,
@@ -220,12 +194,12 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 			DeveloperKeyScopeMode: handlers.DeveloperKeyScopeEnforce,
 		},
 		Dependencies{
-			Auth:           dynStore,
-			DeveloperKeys:  dynStore,
-			Events:         dynStore,
-			Songbooks:      dynStore,
-			CatalogChanges: dynStore,
-			Requests:       dynStore,
+			Auth:           pgStore,
+			DeveloperKeys:  pgStore,
+			Events:         pgStore,
+			Songbooks:      pgStore,
+			CatalogChanges: pgStore,
+			Requests:       pgStore,
 		},
 	)
 	if err != nil {
@@ -237,7 +211,7 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 
 	return &crossAdapterHarness{
 		ctx:           ctx,
-		dynStore:      dynStore,
+		pgStore:       pgStore,
 		router:        router,
 		hostA:         hostA,
 		eventA:        eventA,
@@ -252,12 +226,12 @@ func setupCrossAdapterTestDynamo(t *testing.T) *crossAdapterHarness {
 	}
 }
 
-// TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter exercises
+// TestContract_CrossAdapter_SubmissionStatusAndLifecycle_PostgresRouter exercises
 // request submission, status changes (accepted, up_next, completed, cancelled), and conditional
 // polling across Host Session Auth, Developer-Key PAT, OpenKJ, Retained Compatibility, and Singer routes.
 // Reuses testdata/contracts canonical fixtures for public queue, poll 204, and status mutations.
-func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *testing.T) {
-	h := setupCrossAdapterTestDynamo(t)
+func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_PostgresRouter(t *testing.T) {
+	h := setupCrossAdapterTestPostgres(t)
 
 	// Load canonical fixtures for shared expectations
 	var publicFixture struct {
@@ -319,8 +293,8 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 			t.Fatalf("unexpected singer request fields: %+v", singerReq)
 		}
 
-		// Observable Persistence Invariant: QueueVersion advanced from 1 to 2 in DynamoDB
-		ev, err := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// Observable Persistence Invariant: QueueVersion advanced from 1 to 2 in PostgreSQL
+		ev, err := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if err != nil {
 			t.Fatalf("get event after submission: %v", err)
 		}
@@ -430,7 +404,7 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 	}
 
 	// D. OpenKJ Monotonic Serial (GET /api/v1/openkj/api.php?action=getserial&key={key}):
-	// Matches Event.QueueVersion in DynamoDB.
+	// Matches Event.QueueVersion in PostgreSQL.
 	{
 		rec := executeContractRequest(t, h.router, contractRequestSpec{
 			Method: http.MethodGet,
@@ -492,8 +466,8 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 			t.Fatalf("host patch X-Queue-Version = %q; want \"3\"", rec.Header().Get("X-Queue-Version"))
 		}
 
-		// Observable Persistence Invariant: QueueVersion advanced to 3 in DynamoDB
-		ev, err := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// Observable Persistence Invariant: QueueVersion advanced to 3 in PostgreSQL
+		ev, err := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
@@ -635,17 +609,17 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 			t.Fatalf("playing alias patch X-Queue-Version = %q; want \"4\"", rec.Header().Get("X-Queue-Version"))
 		}
 
-		// Verify normalized status is up_next in DynamoDB
-		stored, err := h.dynStore.GetRequest(h.ctx, singerReq.ID)
+		// Verify normalized status is up_next in PostgreSQL
+		stored, err := h.pgStore.GetRequest(h.ctx, singerReq.ID)
 		if err != nil {
-			t.Fatalf("get request from dynamo: %v", err)
+			t.Fatalf("get request from postgres: %v", err)
 		}
 		if stored.Status != models.StatusUpNext {
 			t.Fatalf("stored status after playing alias = %q; want %q", stored.Status, models.StatusUpNext)
 		}
 
 		// QueueVersion advanced to 4
-		ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if ev.QueueVersion != 4 {
 			t.Fatalf("event QueueVersion = %d; want 4", ev.QueueVersion)
 		}
@@ -685,16 +659,16 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 		}
 
 		// Observable Persistence Invariants:
-		// 1. Request status in DynamoDB is StatusCompleted
-		storedReq, err := h.dynStore.GetRequest(h.ctx, singerReq.ID)
+		// 1. Request status in PostgreSQL is StatusCompleted
+		storedReq, err := h.pgStore.GetRequest(h.ctx, singerReq.ID)
 		if err != nil {
-			t.Fatalf("get request from dynamo: %v", err)
+			t.Fatalf("get request from postgres: %v", err)
 		}
 		if storedReq.Status != models.StatusCompleted {
-			t.Fatalf("dynamo request status = %q; want %q", storedReq.Status, models.StatusCompleted)
+			t.Fatalf("postgres request status = %q; want %q", storedReq.Status, models.StatusCompleted)
 		}
-		// 2. Event QueueVersion in DynamoDB advanced to 5
-		ev, err := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// 2. Event QueueVersion in PostgreSQL advanced to 5
+		ev, err := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
@@ -796,7 +770,7 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 		_ = json.Unmarshal(rec.Body.Bytes(), &singerReq2)
 
 		// QueueVersion is now 6
-		ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if ev.QueueVersion != 6 {
 			t.Fatalf("event QueueVersion = %d; want 6", ev.QueueVersion)
 		}
@@ -812,8 +786,8 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 			t.Fatalf("singer cancel status = %d; want 204; body = %s", rec.Code, rec.Body.String())
 		}
 
-		// Observable Persistence Invariant: QueueVersion advanced to 7 in DynamoDB
-		ev, err := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// Observable Persistence Invariant: QueueVersion advanced to 7 in PostgreSQL
+		ev, err := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
@@ -871,7 +845,7 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 		}
 
 		// QueueVersion is now 9 (7 + 2)
-		ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if ev.QueueVersion != 9 {
 			t.Fatalf("event QueueVersion = %d; want 9", ev.QueueVersion)
 		}
@@ -886,7 +860,7 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 		}
 
 		// Both requests completed; QueueVersion advanced by 2 (to 11)
-		evAfter, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		evAfter, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if evAfter.QueueVersion != 11 {
 			t.Fatalf("event QueueVersion after clear = %d; want 11", evAfter.QueueVersion)
 		}
@@ -921,13 +895,13 @@ func TestContract_CrossAdapter_SubmissionStatusAndLifecycle_DynamoDBRouter(t *te
 	}
 }
 
-// TestContract_CrossAdapter_QueueOrderingAndReorder_DynamoDBRouter exercises manual
+// TestContract_CrossAdapter_QueueOrderingAndReorder_PostgresRouter exercises manual
 // queue reordering across Host Session Auth, Developer-Key PAT, and Retained Compatibility routes,
 // reusing the canonical queue_reorder_200.json fixture expectations, asserting atomic
 // version progression and public rotation order, while documenting the intentional
 // absence of a reorder action in the OpenKJ protocol.
-func TestContract_CrossAdapter_QueueOrderingAndReorder_DynamoDBRouter(t *testing.T) {
-	h := setupCrossAdapterTestDynamo(t)
+func TestContract_CrossAdapter_QueueOrderingAndReorder_PostgresRouter(t *testing.T) {
+	h := setupCrossAdapterTestPostgres(t)
 
 	// Load canonical reorder fixture
 	var reorderFixture struct {
@@ -976,7 +950,7 @@ func TestContract_CrossAdapter_QueueOrderingAndReorder_DynamoDBRouter(t *testing
 	}
 
 	// Current QueueVersion is 7 (1 initial + 3 submits + 3 accepts)
-	ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+	ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 	if ev.QueueVersion != 7 {
 		t.Fatalf("event QueueVersion = %d; want 7", ev.QueueVersion)
 	}
@@ -1022,8 +996,8 @@ func TestContract_CrossAdapter_QueueOrderingAndReorder_DynamoDBRouter(t *testing
 			t.Fatalf("pat reorder X-Queue-Version = %q; want \"8\"", rec.Header().Get("X-Queue-Version"))
 		}
 
-		// Observable Persistence Invariant: QueueVersion advanced to 8 in DynamoDB
-		ev, err := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// Observable Persistence Invariant: QueueVersion advanced to 8 in PostgreSQL
+		ev, err := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
@@ -1082,8 +1056,8 @@ func TestContract_CrossAdapter_QueueOrderingAndReorder_DynamoDBRouter(t *testing
 			t.Fatalf("session reorder X-Queue-Version = %q; want \"9\"", rec.Header().Get("X-Queue-Version"))
 		}
 
-		// Observable in DynamoDB: QueueVersion is 9
-		ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// Observable in PostgreSQL: QueueVersion is 9
+		ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if ev.QueueVersion != 9 {
 			t.Fatalf("event QueueVersion = %d; want 9", ev.QueueVersion)
 		}
@@ -1120,11 +1094,11 @@ func TestContract_CrossAdapter_QueueOrderingAndReorder_DynamoDBRouter(t *testing
 	}
 }
 
-// TestContract_CrossAdapter_EventAcceptingAndLifecycle_DynamoDBRouter exercises
+// TestContract_CrossAdapter_EventAcceptingAndLifecycle_PostgresRouter exercises
 // event pause and resume transitions across OpenKJ (action=setaccepting),
 // Host Session Auth (POST /pause and /resume), Developer PAT, and Singer submission rejection.
-func TestContract_CrossAdapter_EventAcceptingAndLifecycle_DynamoDBRouter(t *testing.T) {
-	h := setupCrossAdapterTestDynamo(t)
+func TestContract_CrossAdapter_EventAcceptingAndLifecycle_PostgresRouter(t *testing.T) {
+	h := setupCrossAdapterTestPostgres(t)
 
 	// =========================================================================
 	// 1. OpenKJ Pauses Event (action=setaccepting&accepting=0)
@@ -1143,13 +1117,13 @@ func TestContract_CrossAdapter_EventAcceptingAndLifecycle_DynamoDBRouter(t *test
 			t.Fatalf("unexpected openkj response: %+v", okjResp)
 		}
 
-		// Observable Persistence Invariant: Event status is paused in DynamoDB
-		ev, err := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// Observable Persistence Invariant: Event status is paused in PostgreSQL
+		ev, err := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
 		if ev.Status != models.EventStatusPaused {
-			t.Fatalf("dynamo event status = %q; want %q", ev.Status, models.EventStatusPaused)
+			t.Fatalf("postgres event status = %q; want %q", ev.Status, models.EventStatusPaused)
 		}
 	}
 
@@ -1243,10 +1217,10 @@ func TestContract_CrossAdapter_EventAcceptingAndLifecycle_DynamoDBRouter(t *test
 			t.Fatalf("session resume status = %d; want 200; body = %s", rec.Code, rec.Body.String())
 		}
 
-		// Observable Persistence Invariant: Event status is active in DynamoDB
-		ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		// Observable Persistence Invariant: Event status is active in PostgreSQL
+		ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if ev.Status != models.EventStatusActive {
-			t.Fatalf("dynamo event status after session resume = %q; want %q", ev.Status, models.EventStatusActive)
+			t.Fatalf("postgres event status after session resume = %q; want %q", ev.Status, models.EventStatusActive)
 		}
 	}
 
@@ -1279,9 +1253,9 @@ func TestContract_CrossAdapter_EventAcceptingAndLifecycle_DynamoDBRouter(t *test
 		if rec.Code != http.StatusOK {
 			t.Fatalf("pat pause status = %d; want 200", rec.Code)
 		}
-		ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if ev.Status != models.EventStatusPaused {
-			t.Fatalf("dynamo event status after pat pause = %q; want %q", ev.Status, models.EventStatusPaused)
+			t.Fatalf("postgres event status after pat pause = %q; want %q", ev.Status, models.EventStatusPaused)
 		}
 	}
 
@@ -1296,19 +1270,19 @@ func TestContract_CrossAdapter_EventAcceptingAndLifecycle_DynamoDBRouter(t *test
 		if rec.Code != http.StatusOK {
 			t.Fatalf("openkj resume status = %d; want 200", rec.Code)
 		}
-		ev, _ := h.dynStore.GetEvent(h.ctx, h.eventA.ID)
+		ev, _ := h.pgStore.GetEvent(h.ctx, h.eventA.ID)
 		if ev.Status != models.EventStatusActive {
-			t.Fatalf("dynamo event status after openkj resume = %q; want %q", ev.Status, models.EventStatusActive)
+			t.Fatalf("postgres event status after openkj resume = %q; want %q", ev.Status, models.EventStatusActive)
 		}
 	}
 }
 
-// TestContract_CrossAdapter_CatalogOperations_DynamoDBRouter exercises OpenKJ
-// catalog sync operations (addsongs and cleardatabase) backed by DynamoDB Local.
-// Verifies persisted availability pruning in DynamoDB and catalog read exposure,
+// TestContract_CrossAdapter_CatalogOperations_PostgresRouter exercises OpenKJ
+// catalog sync operations (addsongs and cleardatabase) backed by PostgreSQL.
+// Verifies persisted availability pruning in PostgreSQL and catalog read exposure,
 // while asserting the other tenant's catalog remains untouched.
-func TestContract_CrossAdapter_CatalogOperations_DynamoDBRouter(t *testing.T) {
-	h := setupCrossAdapterTestDynamo(t)
+func TestContract_CrossAdapter_CatalogOperations_PostgresRouter(t *testing.T) {
+	h := setupCrossAdapterTestPostgres(t)
 
 	// 1. Host A bulk-imports songs via OpenKJ: POST /api/v1/openkj/api.php?action=addsongs
 	songsPayloadA := `[
@@ -1358,15 +1332,15 @@ func TestContract_CrossAdapter_CatalogOperations_DynamoDBRouter(t *testing.T) {
 	}
 
 	// 3. Verify initial state before clearing:
-	// Host A has 2 available songs in DynamoDB CatalogChanges and REST catalog read
+	// Host A has 2 available songs in PostgreSQL CatalogChanges and REST catalog read
 	{
-		changesA, err := h.dynStore.ListCatalogChanges(h.ctx, h.eventA.SongbookID)
+		changesA, err := h.pgStore.ListCatalogChanges(h.ctx, h.eventA.SongbookID)
 		if err != nil {
-			t.Fatalf("list catalog changes A from dynamo: %v", err)
+			t.Fatalf("list catalog changes A from postgres: %v", err)
 		}
 		songsA := models.ApplyCatalogChanges(nil, changesA)
 		if len(songsA) != 2 {
-			t.Fatalf("expected 2 songs for Host A in dynamo; got %d", len(songsA))
+			t.Fatalf("expected 2 songs for Host A in postgres; got %d", len(songsA))
 		}
 		for _, s := range songsA {
 			if !s.IsAvailable {
@@ -1394,11 +1368,11 @@ func TestContract_CrossAdapter_CatalogOperations_DynamoDBRouter(t *testing.T) {
 		}
 	}
 
-	// Host B has 1 available song in DynamoDB CatalogChanges and REST catalog read
+	// Host B has 1 available song in PostgreSQL CatalogChanges and REST catalog read
 	{
-		changesB, err := h.dynStore.ListCatalogChanges(h.ctx, h.eventB.SongbookID)
+		changesB, err := h.pgStore.ListCatalogChanges(h.ctx, h.eventB.SongbookID)
 		if err != nil {
-			t.Fatalf("list catalog changes B from dynamo: %v", err)
+			t.Fatalf("list catalog changes B from postgres: %v", err)
 		}
 		songsB := models.ApplyCatalogChanges(nil, changesB)
 		if len(songsB) != 1 {
@@ -1446,7 +1420,7 @@ func TestContract_CrossAdapter_CatalogOperations_DynamoDBRouter(t *testing.T) {
 
 	// 5. Observable Persistence Invariant: Host A catalog changes resolve to 0 songs after clearDatabase
 	{
-		changesA, err := h.dynStore.ListCatalogChanges(h.ctx, h.eventA.SongbookID)
+		changesA, err := h.pgStore.ListCatalogChanges(h.ctx, h.eventA.SongbookID)
 		if err != nil {
 			t.Fatalf("list catalog changes A after clear: %v", err)
 		}
@@ -1479,7 +1453,7 @@ func TestContract_CrossAdapter_CatalogOperations_DynamoDBRouter(t *testing.T) {
 
 	// 7. Observable Tenant Isolation Invariant: Host B catalog remains completely UNCHANGED
 	{
-		changesB, err := h.dynStore.ListCatalogChanges(h.ctx, h.eventB.SongbookID)
+		changesB, err := h.pgStore.ListCatalogChanges(h.ctx, h.eventB.SongbookID)
 		if err != nil {
 			t.Fatalf("list catalog changes B after Host A clear: %v", err)
 		}
@@ -1511,11 +1485,11 @@ func TestContract_CrossAdapter_CatalogOperations_DynamoDBRouter(t *testing.T) {
 	}
 }
 
-// TestContract_CrossAdapter_TenantIsolationAndAuthorization_DynamoDBRouter asserts
+// TestContract_CrossAdapter_TenantIsolationAndAuthorization_PostgresRouter asserts
 // tenant isolation (Contract C01), anti-enumeration (404 Not Found), developer key scope enforcement
 // (reusing developer_scope_failures_403.json), OpenKJ credential validation, and method constraints.
-func TestContract_CrossAdapter_TenantIsolationAndAuthorization_DynamoDBRouter(t *testing.T) {
-	h := setupCrossAdapterTestDynamo(t)
+func TestContract_CrossAdapter_TenantIsolationAndAuthorization_PostgresRouter(t *testing.T) {
+	h := setupCrossAdapterTestPostgres(t)
 
 	// Create request belonging to Event A
 	var reqA models.SongRequest
@@ -1547,8 +1521,8 @@ func TestContract_CrossAdapter_TenantIsolationAndAuthorization_DynamoDBRouter(t 
 			t.Fatalf("cross-tenant openkj delete status = %d; want 403 Forbidden; body = %s", rec.Code, rec.Body.String())
 		}
 
-		// Invariant: reqA remains pending in DynamoDB
-		stored, err := h.dynStore.GetRequest(h.ctx, reqA.ID)
+		// Invariant: reqA remains pending in PostgreSQL
+		stored, err := h.pgStore.GetRequest(h.ctx, reqA.ID)
 		if err != nil || stored.Status != models.StatusPending {
 			t.Fatalf("reqA mutated across tenant boundary: %+v", stored)
 		}
@@ -1621,12 +1595,12 @@ func TestContract_CrossAdapter_TenantIsolationAndAuthorization_DynamoDBRouter(t 
 
 	// Ended Event Key is rejected with 401 Unauthorized ("event has ended")
 	{
-		evB, err := h.dynStore.GetEvent(h.ctx, h.eventB.ID)
+		evB, err := h.pgStore.GetEvent(h.ctx, h.eventB.ID)
 		if err != nil {
 			t.Fatalf("get event B: %v", err)
 		}
 		evB.Status = models.EventStatusEnded
-		if err := h.dynStore.UpdateEvent(h.ctx, evB); err != nil {
+		if err := h.pgStore.UpdateEvent(h.ctx, evB); err != nil {
 			t.Fatalf("update event B to ended: %v", err)
 		}
 		rec := executeContractRequest(t, h.router, contractRequestSpec{
@@ -1739,7 +1713,7 @@ func TestContract_CrossAdapter_TenantIsolationAndAuthorization_DynamoDBRouter(t 
 // email verification confirmation routes reject invalid tokens with 400 Bad Request,
 // while retired /api/v1/auth/verify-email aliases return 404 Not Found.
 func TestContract_EmailVerificationConfirmAndRetiredAliases(t *testing.T) {
-	h := setupCrossAdapterTestDynamo(t)
+	h := setupCrossAdapterTestPostgres(t)
 
 	for _, tc := range []struct {
 		name       string

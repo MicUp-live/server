@@ -1,26 +1,4 @@
 services:
-  # DynamoDB Local is kept separate from LocalStack because its transaction and
-  # table/index behavior is closer to the production DynamoDB API than a
-  # second emulation layer, and it is already the local persistence contract.
-  dynamodb:
-    image: amazon/dynamodb-local:2.6.1
-    container_name: micup-dynamodb
-    user: "0:0"
-    restart: unless-stopped
-    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/home/dynamodblocal/data"]
-    ports:
-      - "127.0.0.1:8000:8000"
-    volumes:
-      - dynamo_data:/home/dynamodblocal/data
-    healthcheck:
-      # DynamoDB Local answers a bare GET with HTTP 400 because it expects an
-      # operation payload; a successful curl connection is the useful probe.
-      test: ["CMD-SHELL", "curl -sS http://127.0.0.1:8000 >/dev/null"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
-
   # LocalStack supplies the AWS-managed services used by the API and workers
   # (S3, SQS, and SES) without creating or touching an AWS account resource.
   localstack:
@@ -69,7 +47,6 @@ services:
       start_period: 5s
 
 volumes:
-  dynamo_data:
   localstack_data:
   postgres_data:
 

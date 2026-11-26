@@ -11,8 +11,7 @@ watchexec = "2.5.1"
 [env]
 _.python.venv = { path = ".venv", create = true }
 APP_ENV="development"
-DYNAMO_ENDPOINT="http://127.0.0.1:8000"
-DYNAMO_TABLE_PREFIX="micup-local-"
+STORE_BACKEND="postgres"
 DATABASE_URL="postgres://micup:micup-local-password@127.0.0.1:5432/micup?sslmode=disable"
 AWS_REGION="us-east-2"
 AWS_EC2_METADATA_DISABLED="true"
@@ -41,12 +40,12 @@ run = "mise watch --restart dev"
 
 # --- Database ---
 [tasks."db:up"]
-description = "Start DynamoDB Local"
-run = "docker compose up -d --wait dynamodb"
+description = "Start local PostgreSQL 16"
+run = "docker compose up -d --wait postgres"
 
 [tasks."db:down"]
-description = "Stop DynamoDB Local"
-run = "docker compose stop dynamodb"
+description = "Stop local PostgreSQL 16"
+run = "docker compose stop postgres"
 
 [tasks."pg:up"]
 description = "Start local PostgreSQL 16"
@@ -57,11 +56,11 @@ description = "Stop local PostgreSQL 16"
 run = "docker compose stop postgres"
 
 [tasks."local:services"]
-description = "Start the local DynamoDB, S3, SQS, and SES emulators"
+description = "Start the local PostgreSQL and LocalStack (S3, SQS, SES) emulators"
 run = "docker compose up -d --wait"
 
 [tasks."local:bootstrap"]
-description = "Provision the production-shaped local DynamoDB schema"
+description = "Provision the local PostgreSQL schema and LocalStack resources"
 depends = ["local:services"]
 run = "go run ./cmd/local-bootstrap"
 
@@ -78,16 +77,16 @@ description = "Delete local emulator data and recreate the production simulation
 run = "docker compose down --volumes && mise run local:up"
 
 [tasks."local:logs"]
-description = "Follow logs from the local AWS service emulators"
-run = "docker compose logs --follow dynamodb localstack"
+description = "Follow logs from the local PostgreSQL and LocalStack services"
+run = "docker compose logs --follow postgres localstack"
 
 [tasks."local:verify"]
-description = "Verify the local DynamoDB, S3, SQS, and SES resources"
+description = "Verify the local PostgreSQL, S3, SQS, and SES resources"
 depends = ["local:bootstrap"]
 run = '''
 export AWS_ACCESS_KEY_ID=local
 export AWS_SECRET_ACCESS_KEY=local
-aws dynamodb list-tables --endpoint-url http://127.0.0.1:8000 --output text >/dev/null
+docker compose exec -T postgres pg_isready -U micup -d micup >/dev/null
 aws s3api head-bucket --bucket micup-app-local --endpoint-url http://127.0.0.1:4566
 aws sqs get-queue-url --queue-name micup-local-catalog-build --endpoint-url http://127.0.0.1:4566 --output text >/dev/null
 aws sqs get-queue-url --queue-name micup-local-import-jobs --endpoint-url http://127.0.0.1:4566 --output text >/dev/null
@@ -100,38 +99,19 @@ echo "Local production simulation is ready."
 description = "Install Python tooling dependencies into the project virtualenv"
 run = "python -m pip install -r requirements.txt"
 
-# Backend tests are sharded across parallel mise tasks, each backed by its own
-# ephemeral in-memory DynamoDB Local container (scripts/test-dynamo-shard.sh) so
-# the 120+ DynamoDB integration tests run in ~1 minute without touching the
-# persistent dev volume. Set DYNAMO_USE_EXISTING=1 to target DYNAMO_ENDPOINT directly.
 [tasks."test:packages"]
-description = "Run all Go package tests except internal/store/dynamo"
-run = "./scripts/test-dynamo-shard.sh packages"
+description = "Run all Go package tests against local PostgreSQL 16"
+depends = ["pg:up"]
+run = "go test -count=1 ./..."
 
 [tasks."test:postgres"]
 description = "Run PostgreSQL store integration tests against local PostgreSQL 16"
 depends = ["pg:up"]
 run = "go test -count=1 ./internal/store/postgres ./internal/store/backend"
 
-[tasks."test:dynamo:1"]
-description = "Run internal/store/dynamo test shard 1/4"
-run = "./scripts/test-dynamo-shard.sh 1 4"
-
-[tasks."test:dynamo:2"]
-description = "Run internal/store/dynamo test shard 2/4"
-run = "./scripts/test-dynamo-shard.sh 2 4"
-
-[tasks."test:dynamo:3"]
-description = "Run internal/store/dynamo test shard 3/4"
-run = "./scripts/test-dynamo-shard.sh 3 4"
-
-[tasks."test:dynamo:4"]
-description = "Run internal/store/dynamo test shard 4/4"
-run = "./scripts/test-dynamo-shard.sh 4 4"
-
 [tasks.test]
-description = "Run all backend tests in parallel shards"
-depends = ["test:packages", "test:dynamo:1", "test:dynamo:2", "test:dynamo:3", "test:dynamo:4"]
+description = "Run all backend tests"
+depends = ["test:packages"]
 run = "true"
 
 [tasks."web:test"]

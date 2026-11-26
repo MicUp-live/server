@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,17 +18,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"micup.live/server/internal/config"
 	"micup.live/server/internal/handlers"
 	"micup.live/server/internal/models"
 	"micup.live/server/internal/store"
-	"micup.live/server/internal/store/dynamo"
+	pgstore "micup.live/server/internal/store/postgres"
 )
 
 type contractRequestSpec struct {
@@ -889,137 +887,125 @@ func assertContractResponseFields(t *testing.T, label string, body []byte, spec 
 	}
 }
 
-type dynamoTableDeleter interface {
-	DeleteTable(ctx context.Context, params *dynamodb.DeleteTableInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteTableOutput, error)
+type schemaExecer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
-func fixtureDynamoTableNames(prefix string) []string {
-	return []string{
-		prefix + "users",
-		prefix + "identity-claims",
-		prefix + "sessions",
-		prefix + "songbooks",
-		prefix + "event-requests",
-		prefix + "events",
-		prefix + "passkeys",
-		prefix + "webauthn-sessions",
-		prefix + "catalog-versions",
-		prefix + "import-jobs",
-		prefix + "catalog-changes",
-		prefix + "developer-keys",
-		prefix + "rate-limits",
-		prefix + "idempotency",
-		prefix + "songbook-grants",
-		prefix + "songbook-invitations",
+func isValidFixtureSchema(schema string) bool {
+	if !strings.HasPrefix(schema, "app_test_") || len(schema) != len("app_test_")+8 {
+		return false
 	}
-}
-
-func cleanupFixtureDynamoTables(ctx context.Context, dbClient dynamoTableDeleter, prefix string, tableNames []string) []error {
-	if prefix == "" || !strings.HasPrefix(prefix, "contract-") {
-		return []error{fmt.Errorf("refusing to delete tables for non-fixture prefix %q", prefix)}
-	}
-	var errs []error
-	for _, tableName := range tableNames {
-		if !strings.HasPrefix(tableName, prefix) {
-			errs = append(errs, fmt.Errorf("refusing to delete table outside fixture prefix %q: %s", prefix, tableName))
-			continue
+	for _, r := range schema[len("app_test_"):] {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
 		}
-		_, err := dbClient.DeleteTable(ctx, &dynamodb.DeleteTableInput{
-			TableName: aws.String(tableName),
-		})
+	}
+	return true
+}
+
+func dsnWithSearchPath(dsn, schema string) (string, error) {
+	if strings.Contains(dsn, "://") {
+		u, err := url.Parse(dsn)
 		if err != nil {
-			var notFound *types.ResourceNotFoundException
-			if !errors.As(err, &notFound) {
-				errs = append(errs, fmt.Errorf("cleanup fixture table %s: %w", tableName, err))
-			}
+			return "", err
 		}
+		q := u.Query()
+		q.Set("search_path", schema)
+		u.RawQuery = q.Encode()
+		return u.String(), nil
 	}
-	return errs
+	return dsn + " search_path=" + schema, nil
 }
 
-func registerFixtureDynamoCleanup(t *testing.T, endpoint, prefix string) {
-	t.Helper()
-	if prefix == "" || !strings.HasPrefix(prefix, "contract-") {
-		t.Fatalf("refusing to register DynamoDB cleanup for non-fixture table prefix %q", prefix)
+func dropFixtureSchema(ctx context.Context, execer schemaExecer, schema string) error {
+	if !isValidFixtureSchema(schema) {
+		return fmt.Errorf("refusing to drop non-fixture schema %q", schema)
 	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(
-		context.Background(),
-		awsconfig.WithRegion("us-east-1"),
-		awsconfig.WithBaseEndpoint(strings.TrimRight(endpoint, "/")),
-		awsconfig.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("local", "local", "")),
-	)
+	_, err := execer.Exec(ctx, "DROP SCHEMA IF EXISTS "+pgx.Identifier{schema}.Sanitize()+" CASCADE")
 	if err != nil {
-		t.Fatalf("load DynamoDB cleanup config: %v", err)
+		return fmt.Errorf("cleanup fixture schema %s: %w", schema, err)
 	}
-	dbClient := dynamodb.NewFromConfig(awsCfg)
-	fixtureTables := fixtureDynamoTableNames(prefix)
-	t.Cleanup(func() {
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		for _, err := range cleanupFixtureDynamoTables(cleanupCtx, dbClient, prefix, fixtureTables) {
-			t.Errorf("%v", err)
-		}
-	})
+	return nil
 }
 
-type failingDynamoDeleter struct {
-	deleted []string
-	failOn  string
-}
-
-func (f *failingDynamoDeleter) DeleteTable(_ context.Context, params *dynamodb.DeleteTableInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteTableOutput, error) {
-	name := aws.ToString(params.TableName)
-	if name == f.failOn {
-		return nil, errors.New("simulated delete table failure")
-	}
-	if strings.HasSuffix(name, "-missing") {
-		return nil, &types.ResourceNotFoundException{Message: aws.String("not found")}
-	}
-	f.deleted = append(f.deleted, name)
-	return &dynamodb.DeleteTableOutput{}, nil
-}
-
-func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
-	// Verify cleanup helper handles partial setup failure, reports non-NotFound errors, and refuses non-fixture namespaces.
-	fakeDeleter := &failingDynamoDeleter{failOn: "contract-unit-events"}
-	cleanupErrs := cleanupFixtureDynamoTables(
-		context.Background(),
-		fakeDeleter,
-		"contract-unit-",
-		[]string{"contract-unit-users", "contract-unit-missing", "contract-unit-events", "micup-local-users"},
-	)
-	if len(fakeDeleter.deleted) != 1 || fakeDeleter.deleted[0] != "contract-unit-users" {
-		t.Fatalf("partial cleanup deleted = %v; want [contract-unit-users]", fakeDeleter.deleted)
-	}
-	if len(cleanupErrs) != 2 {
-		t.Fatalf("expected 2 cleanup errors (delete failure + unrelated namespace refusal), got %v", cleanupErrs)
-	}
-
-	endpoint := os.Getenv("DYNAMO_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("DYNAMO_ENDPOINT is not set; skipping DynamoDB Local contract fixture test")
+func openIsolatedContractPostgresStore(t *testing.T) (context.Context, *pgstore.Store) {
+	t.Helper()
+	dsn := os.Getenv("DATABASE_URL")
+	if dsn == "" {
+		t.Skip("DATABASE_URL not set")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	prefix := fmt.Sprintf("contract-%d-%s-", time.Now().UnixNano(), uuid.NewString()[:8])
-	dynStore, err := dynamo.New(ctx, dynamo.Config{
-		Region:      "us-east-1",
-		Endpoint:    endpoint,
-		TablePrefix: prefix,
-	})
+	t.Cleanup(cancel)
+
+	schema := "app_test_" + strings.ReplaceAll(uuid.NewString(), "-", "")[:8]
+	adminStore, err := pgstore.New(ctx, pgstore.Config{DSN: dsn})
 	if err != nil {
-		t.Fatalf("create dynamo store: %v", err)
+		t.Fatalf("create postgres admin store: %v", err)
 	}
-	registerFixtureDynamoCleanup(t, endpoint, prefix)
+	if _, err := adminStore.Pool().Exec(ctx, "CREATE SCHEMA "+pgx.Identifier{schema}.Sanitize()); err != nil {
+		_ = adminStore.Close()
+		t.Fatalf("create fixture schema %s: %v", schema, err)
+	}
+	_ = adminStore.Close()
+
+	isolatedDSN, err := dsnWithSearchPath(dsn, schema)
+	if err != nil {
+		t.Fatalf("build isolated postgres DSN: %v", err)
+	}
+	pgStore, err := pgstore.New(ctx, pgstore.Config{DSN: isolatedDSN})
+	if err != nil {
+		if cleanupStore, cleanupErr := pgstore.New(context.Background(), pgstore.Config{DSN: dsn}); cleanupErr == nil {
+			_ = dropFixtureSchema(context.Background(), cleanupStore.Pool(), schema)
+			_ = cleanupStore.Close()
+		}
+		t.Fatalf("create isolated postgres store: %v", err)
+	}
 	t.Cleanup(func() {
-		if err := dynStore.Close(); err != nil {
-			t.Errorf("close dynamo store: %v", err)
+		if err := pgStore.Close(); err != nil {
+			t.Errorf("close postgres store: %v", err)
 		}
 	})
-	if err := dynStore.EnsureTables(ctx); err != nil {
-		t.Fatalf("ensure dynamo tables: %v", err)
+	t.Cleanup(func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		if err := dropFixtureSchema(cleanupCtx, pgStore.Pool(), schema); err != nil {
+			t.Errorf("%v", err)
+		}
+	})
+	if err := pgStore.EnsureSchema(ctx); err != nil {
+		t.Fatalf("ensure postgres schema %s: %v", schema, err)
 	}
+	return ctx, pgStore
+}
+
+type failingSchemaExecer struct {
+	executed []string
+	failErr  error
+}
+
+func (f *failingSchemaExecer) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	f.executed = append(f.executed, sql)
+	if f.failErr != nil {
+		return pgconn.CommandTag{}, f.failErr
+	}
+	return pgconn.CommandTag{}, nil
+}
+
+func TestContractFixtures_PostgresRouterEndToEnd(t *testing.T) {
+	// Verify schema cleanup helper refuses non-fixture schemas and propagates execution errors.
+	fakeExec := &failingSchemaExecer{failErr: errors.New("simulated drop schema failure")}
+	if err := dropFixtureSchema(context.Background(), fakeExec, "public"); err == nil {
+		t.Fatal("expected dropFixtureSchema to refuse non-fixture schema \"public\"")
+	}
+	if len(fakeExec.executed) != 0 {
+		t.Fatalf("dropFixtureSchema executed SQL for refused schema: %v", fakeExec.executed)
+	}
+	if err := dropFixtureSchema(context.Background(), fakeExec, "app_test_1234abcd"); err == nil {
+		t.Fatal("expected dropFixtureSchema to propagate SQL error")
+	}
+
+	ctx, pgStore := openIsolatedContractPostgresStore(t)
 
 	host := &models.User{
 		ID:          "usr_host_01",
@@ -1027,10 +1013,10 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 		DisplayName: "KJ Host",
 		IsHost:      true,
 	}
-	if err := dynStore.CreateUser(ctx, host); err != nil {
+	if err := pgStore.CreateUser(ctx, host); err != nil {
 		t.Fatalf("create host user: %v", err)
 	}
-	if err := dynStore.CreateSongbook(ctx, &models.Songbook{
+	if err := pgStore.CreateSongbook(ctx, &models.Songbook{
 		ID:       "sb_contract_01",
 		PublicID: "pub_sb_contract_01",
 		OwnerID:  host.ID,
@@ -1045,7 +1031,7 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 		"mk_live_contract_requests_read":  {handlers.DeveloperScopeRequestsRead},
 		"mk_live_contract_requests_write": {handlers.DeveloperScopeRequestsWrite},
 	} {
-		if err := dynStore.CreateDeveloperKey(ctx, rawKey, &models.DeveloperKey{
+		if err := pgStore.CreateDeveloperKey(ctx, rawKey, &models.DeveloperKey{
 			Name:         rawKey,
 			KeyPrefix:    rawKey[:12],
 			OwnerID:      host.ID,
@@ -1068,7 +1054,7 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 	for _, ev := range eventsFixture.Response.Body.Events {
 		cp := *ev
 		cp.OwnerID = host.ID
-		if err := dynStore.CreateEvent(ctx, &cp); err != nil {
+		if err := pgStore.CreateEvent(ctx, &cp); err != nil {
 			t.Fatalf("create event %s: %v", cp.ID, err)
 		}
 	}
@@ -1083,7 +1069,7 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 	loadContractFixture(t, "queue_host_requests_200.json", &hostQueueFixture)
 	for _, req := range hostQueueFixture.Response.Body.Requests {
 		cp := *req
-		if err := dynStore.CreateRequest(ctx, &cp); err != nil {
+		if err := pgStore.CreateRequest(ctx, &cp); err != nil {
 			t.Fatalf("create request %s: %v", cp.ID, err)
 		}
 	}
@@ -1097,18 +1083,18 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 			DeveloperKeyScopeMode: handlers.DeveloperKeyScopeEnforce,
 		},
 		Dependencies{
-			Auth:          dynStore,
-			DeveloperKeys: dynStore,
-			Events:        dynStore,
-			Songbooks:     dynStore,
-			Requests:      dynStore,
+			Auth:          pgStore,
+			DeveloperKeys: pgStore,
+			Events:        pgStore,
+			Songbooks:     pgStore,
+			Requests:      pgStore,
 		},
 	)
 	if err != nil {
-		t.Fatalf("create dynamo contract router: %v", err)
+		t.Fatalf("create postgres contract router: %v", err)
 	}
 
-	// 1. Verify 204 No Content polling against DynamoDB.
+	// 1. Verify 204 No Content polling against PostgreSQL.
 	var pollFixture struct {
 		Cases []struct {
 			Name     string               `json:"name"`
@@ -1120,15 +1106,15 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 	for _, tc := range pollFixture.Cases {
 		rec := executeContractRequest(t, router, tc.Request)
 		if rec.Code != tc.Response.Status {
-			t.Fatalf("dynamo %s status = %d, body = %s; want %d", tc.Name, rec.Code, rec.Body.String(), tc.Response.Status)
+			t.Fatalf("postgres %s status = %d, body = %s; want %d", tc.Name, rec.Code, rec.Body.String(), tc.Response.Status)
 		}
-		assertResponseHeaders(t, "dynamo "+tc.Name, rec.Header(), tc.Response.Headers)
+		assertResponseHeaders(t, "postgres "+tc.Name, rec.Header(), tc.Response.Headers)
 		if tc.Response.BodyBytes != nil && rec.Body.Len() != *tc.Response.BodyBytes {
-			t.Fatalf("dynamo %s body len = %d; want %d", tc.Name, rec.Body.Len(), *tc.Response.BodyBytes)
+			t.Fatalf("postgres %s body len = %d; want %d", tc.Name, rec.Body.Len(), *tc.Response.BodyBytes)
 		}
 	}
 
-	// 2. Verify status mutations, reorder, version conflicts, idempotent replays, and idempotency conflicts against DynamoDB transactions.
+	// 2. Verify status mutations, reorder, version conflicts, idempotent replays, and idempotency conflicts against PostgreSQL transactions.
 	var mutationsFixture struct {
 		Mutations []struct {
 			Name     string               `json:"name"`
@@ -1140,10 +1126,10 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 	for _, m := range mutationsFixture.Mutations {
 		rec := executeContractRequest(t, router, m.Request)
 		if rec.Code != m.Response.Status {
-			t.Fatalf("dynamo %s status = %d, body = %s; want %d", m.Name, rec.Code, rec.Body.String(), m.Response.Status)
+			t.Fatalf("postgres %s status = %d, body = %s; want %d", m.Name, rec.Code, rec.Body.String(), m.Response.Status)
 		}
-		assertResponseHeaders(t, "dynamo "+m.Name, rec.Header(), m.Response.Headers)
-		assertContractResponseFields(t, "dynamo "+m.Name, rec.Body.Bytes(), m.Response)
+		assertResponseHeaders(t, "postgres "+m.Name, rec.Header(), m.Response.Headers)
+		assertContractResponseFields(t, "postgres "+m.Name, rec.Body.Bytes(), m.Response)
 	}
 
 	var reorderFixture struct {
@@ -1154,10 +1140,10 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 	loadContractFixture(t, "queue_reorder_200.json", &reorderFixture)
 	reorderRec := executeContractRequest(t, router, reorderFixture.Request)
 	if reorderRec.Code != reorderFixture.Response.Status {
-		t.Fatalf("dynamo reorder status = %d, body = %s; want %d", reorderRec.Code, reorderRec.Body.String(), reorderFixture.Response.Status)
+		t.Fatalf("postgres reorder status = %d, body = %s; want %d", reorderRec.Code, reorderRec.Body.String(), reorderFixture.Response.Status)
 	}
-	assertResponseHeaders(t, "dynamo reorder", reorderRec.Header(), reorderFixture.Response.Headers)
-	assertContractResponseFields(t, "dynamo reorder body", reorderRec.Body.Bytes(), reorderFixture.Response)
+	assertResponseHeaders(t, "postgres reorder", reorderRec.Header(), reorderFixture.Response.Headers)
+	assertContractResponseFields(t, "postgres reorder body", reorderRec.Body.Bytes(), reorderFixture.Response)
 
 	pubRec := executeContractRequest(t, router, contractRequestSpec{
 		Method: http.MethodGet,
@@ -1167,14 +1153,14 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 		Queue []models.PublicQueueItem `json:"queue"`
 	}
 	if err := json.Unmarshal(pubRec.Body.Bytes(), &pubQueue); err != nil {
-		t.Fatalf("decode dynamo public queue after reorder: %v", err)
+		t.Fatalf("decode postgres public queue after reorder: %v", err)
 	}
 	if len(pubQueue.Queue) != len(reorderFixture.ExpectedActiveOrderAfter) {
-		t.Fatalf("dynamo active queue len = %d; want %d", len(pubQueue.Queue), len(reorderFixture.ExpectedActiveOrderAfter))
+		t.Fatalf("postgres active queue len = %d; want %d", len(pubQueue.Queue), len(reorderFixture.ExpectedActiveOrderAfter))
 	}
 	for i, wantID := range reorderFixture.ExpectedActiveOrderAfter {
 		if pubQueue.Queue[i].ID != wantID {
-			t.Fatalf("dynamo active queue[%d].ID = %s; want %s", i, pubQueue.Queue[i].ID, wantID)
+			t.Fatalf("postgres active queue[%d].ID = %s; want %s", i, pubQueue.Queue[i].ID, wantID)
 		}
 	}
 
@@ -1201,64 +1187,40 @@ func TestContractFixtures_DynamoDBRouterEndToEnd(t *testing.T) {
 	for _, vc := range conflictsFixture.VersionConflicts {
 		rec := executeContractRequest(t, router, vc.Request)
 		if rec.Code != vc.Response.Status {
-			t.Fatalf("dynamo %s status = %d, body = %s; want %d", vc.Name, rec.Code, rec.Body.String(), vc.Response.Status)
+			t.Fatalf("postgres %s status = %d, body = %s; want %d", vc.Name, rec.Code, rec.Body.String(), vc.Response.Status)
 		}
-		assertResponseHeaders(t, "dynamo "+vc.Name, rec.Header(), vc.Response.Headers)
-		assertContractResponseFields(t, "dynamo "+vc.Name, rec.Body.Bytes(), vc.Response)
+		assertResponseHeaders(t, "postgres "+vc.Name, rec.Header(), vc.Response.Headers)
+		assertContractResponseFields(t, "postgres "+vc.Name, rec.Body.Bytes(), vc.Response)
 	}
 
 	for _, replay := range conflictsFixture.IdempotentReplays {
 		rec := executeContractRequest(t, router, replay.Request)
 		if rec.Code != replay.Response.Status {
-			t.Fatalf("dynamo %s status = %d, body = %s; want %d", replay.Name, rec.Code, rec.Body.String(), replay.Response.Status)
+			t.Fatalf("postgres %s status = %d, body = %s; want %d", replay.Name, rec.Code, rec.Body.String(), replay.Response.Status)
 		}
-		assertResponseHeaders(t, "dynamo "+replay.Name, rec.Header(), replay.Response.Headers)
-		assertContractResponseFields(t, "dynamo "+replay.Name, rec.Body.Bytes(), replay.Response)
-		ev, err := dynStore.GetEvent(ctx, "evt_contract_01")
+		assertResponseHeaders(t, "postgres "+replay.Name, rec.Header(), replay.Response.Headers)
+		assertContractResponseFields(t, "postgres "+replay.Name, rec.Body.Bytes(), replay.Response)
+		ev, err := pgStore.GetEvent(ctx, "evt_contract_01")
 		if err != nil {
-			t.Fatalf("get event after dynamo replay: %v", err)
+			t.Fatalf("get event after postgres replay: %v", err)
 		}
 		if ev.QueueVersion != replay.EventQueueVersionRemains {
-			t.Fatalf("dynamo QueueVersion after replay = %d; want %d", ev.QueueVersion, replay.EventQueueVersionRemains)
+			t.Fatalf("postgres QueueVersion after replay = %d; want %d", ev.QueueVersion, replay.EventQueueVersionRemains)
 		}
 	}
 
 	for _, ic := range conflictsFixture.IdempotencyConflicts {
 		rec := executeContractRequest(t, router, ic.Request)
 		if rec.Code != ic.Response.Status {
-			t.Fatalf("dynamo %s status = %d, body = %s; want %d", ic.Name, rec.Code, rec.Body.String(), ic.Response.Status)
+			t.Fatalf("postgres %s status = %d, body = %s; want %d", ic.Name, rec.Code, rec.Body.String(), ic.Response.Status)
 		}
-		assertResponseHeaders(t, "dynamo "+ic.Name, rec.Header(), ic.Response.Headers)
-		assertContractResponseFields(t, "dynamo "+ic.Name, rec.Body.Bytes(), ic.Response)
+		assertResponseHeaders(t, "postgres "+ic.Name, rec.Header(), ic.Response.Headers)
+		assertContractResponseFields(t, "postgres "+ic.Name, rec.Body.Bytes(), ic.Response)
 	}
 }
 
-func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
-	endpoint := os.Getenv("DYNAMO_ENDPOINT")
-	if endpoint == "" {
-		t.Skip("DYNAMO_ENDPOINT is not set; skipping DynamoDB Local songbook patch test")
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	prefix := fmt.Sprintf("contract-sbpatch-%d-%s-", time.Now().UnixNano(), uuid.NewString()[:8])
-	dynStore, err := dynamo.New(ctx, dynamo.Config{
-		Region:      "us-east-1",
-		Endpoint:    endpoint,
-		TablePrefix: prefix,
-	})
-	if err != nil {
-		t.Fatalf("create dynamo store: %v", err)
-	}
-	registerFixtureDynamoCleanup(t, endpoint, prefix)
-	t.Cleanup(func() {
-		if err := dynStore.Close(); err != nil {
-			t.Errorf("close dynamo store: %v", err)
-		}
-	})
-	if err := dynStore.EnsureTables(ctx); err != nil {
-		t.Fatalf("ensure dynamo tables: %v", err)
-	}
+func TestContract_EventPatch_PostgresRouterEndToEnd(t *testing.T) {
+	ctx, pgStore := openIsolatedContractPostgresStore(t)
 
 	host := &models.User{
 		ID:          "usr_host_sb_01",
@@ -1266,7 +1228,7 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 		DisplayName: "KJ Host SB",
 		IsHost:      true,
 	}
-	if err := dynStore.CreateUser(ctx, host); err != nil {
+	if err := pgStore.CreateUser(ctx, host); err != nil {
 		t.Fatalf("create host user: %v", err)
 	}
 
@@ -1276,11 +1238,11 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 		DisplayName: "Other Host SB",
 		IsHost:      true,
 	}
-	if err := dynStore.CreateUser(ctx, otherHost); err != nil {
+	if err := pgStore.CreateUser(ctx, otherHost); err != nil {
 		t.Fatalf("create other host user: %v", err)
 	}
 
-	if err := dynStore.CreateSongbook(ctx, &models.Songbook{
+	if err := pgStore.CreateSongbook(ctx, &models.Songbook{
 		ID:       "sb_patch_01",
 		PublicID: "pub_sb_patch_01",
 		OwnerID:  host.ID,
@@ -1290,7 +1252,7 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 		t.Fatalf("create songbook: %v", err)
 	}
 
-	if err := dynStore.CreateDeveloperKey(ctx, "mk_live_sb_requests_read", &models.DeveloperKey{
+	if err := pgStore.CreateDeveloperKey(ctx, "mk_live_sb_requests_read", &models.DeveloperKey{
 		Name:         "mk_live_sb_requests_read",
 		KeyPrefix:    "mk_live_sb_r",
 		OwnerID:      host.ID,
@@ -1301,7 +1263,7 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 		t.Fatalf("create read-only developer key: %v", err)
 	}
 
-	if err := dynStore.CreateDeveloperKey(ctx, "mk_live_sb_requests_write", &models.DeveloperKey{
+	if err := pgStore.CreateDeveloperKey(ctx, "mk_live_sb_requests_write", &models.DeveloperKey{
 		Name:         "mk_live_sb_requests_write",
 		KeyPrefix:    "mk_live_sb_w",
 		OwnerID:      host.ID,
@@ -1312,7 +1274,7 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 		t.Fatalf("create write developer key: %v", err)
 	}
 
-	if err := dynStore.CreateDeveloperKey(ctx, "mk_live_other_host_write", &models.DeveloperKey{
+	if err := pgStore.CreateDeveloperKey(ctx, "mk_live_other_host_write", &models.DeveloperKey{
 		Name:         "mk_live_other_host_write",
 		KeyPrefix:    "mk_live_othe",
 		OwnerID:      otherHost.ID,
@@ -1335,7 +1297,7 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 		CreatedAt:    now,
 		UpdatedAt:    now,
 	}
-	if err := dynStore.CreateEvent(ctx, event); err != nil {
+	if err := pgStore.CreateEvent(ctx, event); err != nil {
 		t.Fatalf("create event: %v", err)
 	}
 
@@ -1350,7 +1312,7 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	if err := dynStore.CreateRequest(ctx, req); err != nil {
+	if err := pgStore.CreateRequest(ctx, req); err != nil {
 		t.Fatalf("create request: %v", err)
 	}
 
@@ -1363,15 +1325,15 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 			DeveloperKeyScopeMode: handlers.DeveloperKeyScopeEnforce,
 		},
 		Dependencies{
-			Auth:          dynStore,
-			DeveloperKeys: dynStore,
-			Events:        dynStore,
-			Songbooks:     dynStore,
-			Requests:      dynStore,
+			Auth:          pgStore,
+			DeveloperKeys: pgStore,
+			Events:        pgStore,
+			Songbooks:     pgStore,
+			Requests:      pgStore,
 		},
 	)
 	if err != nil {
-		t.Fatalf("create dynamo router: %v", err)
+		t.Fatalf("create postgres router: %v", err)
 	}
 
 	// 1. Scope Denial: Developer key with only requests:read cannot PATCH /events/{id}/requests/{rid}
@@ -1434,20 +1396,20 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 			t.Fatalf("unexpected legacy response fields: %+v", respReq)
 		}
 
-		// Verify atomic mutation in DynamoDB
-		ev, err := dynStore.GetEvent(ctx, "evt_patch_01")
-		if err != nil {
-			t.Fatalf("get event from dynamo: %v", err)
+		// Verify atomic mutation in PostgreSQL
+		var qv int64
+		if err := pgStore.Pool().QueryRow(ctx, `SELECT queue_version FROM events WHERE id = $1`, "evt_patch_01").Scan(&qv); err != nil {
+			t.Fatalf("query event queue_version from postgres: %v", err)
 		}
-		if ev.QueueVersion != 2 {
-			t.Fatalf("dynamo event QueueVersion = %d; want 2", ev.QueueVersion)
+		if qv != 2 {
+			t.Fatalf("postgres event queue_version = %d; want 2", qv)
 		}
-		storedReq, err := dynStore.GetRequest(ctx, "req_patch_01")
+		storedReq, err := pgStore.GetRequest(ctx, "req_patch_01")
 		if err != nil {
-			t.Fatalf("get request from dynamo: %v", err)
+			t.Fatalf("get request from postgres: %v", err)
 		}
 		if storedReq.Status != models.StatusAccepted {
-			t.Fatalf("dynamo request status = %q; want %q", storedReq.Status, models.StatusAccepted)
+			t.Fatalf("postgres request status = %q; want %q", storedReq.Status, models.StatusAccepted)
 		}
 	}
 
@@ -1477,20 +1439,20 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 			t.Fatalf("conflict current_queue_version = %v; want 2", errResp["current_queue_version"])
 		}
 
-		// Verify DynamoDB state was untouched
-		ev, err := dynStore.GetEvent(ctx, "evt_patch_01")
+		// Verify PostgreSQL state was untouched
+		ev, err := pgStore.GetEvent(ctx, "evt_patch_01")
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
 		if ev.QueueVersion != 2 {
-			t.Fatalf("dynamo event QueueVersion after conflict = %d; want 2", ev.QueueVersion)
+			t.Fatalf("postgres event QueueVersion after conflict = %d; want 2", ev.QueueVersion)
 		}
-		storedReq, err := dynStore.GetRequest(ctx, "req_patch_01")
+		storedReq, err := pgStore.GetRequest(ctx, "req_patch_01")
 		if err != nil {
 			t.Fatalf("get request: %v", err)
 		}
 		if storedReq.Status != models.StatusAccepted {
-			t.Fatalf("dynamo request status after conflict = %q; want %q", storedReq.Status, models.StatusAccepted)
+			t.Fatalf("postgres request status after conflict = %q; want %q", storedReq.Status, models.StatusAccepted)
 		}
 	}
 
@@ -1523,12 +1485,12 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 			t.Fatalf("initial idempotent response status = %q; want %q", respReq.Status, models.StatusCompleted)
 		}
 
-		ev, err := dynStore.GetEvent(ctx, "evt_patch_01")
+		ev, err := pgStore.GetEvent(ctx, "evt_patch_01")
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
 		if ev.QueueVersion != 3 {
-			t.Fatalf("dynamo event QueueVersion after initial idempotency = %d; want 3", ev.QueueVersion)
+			t.Fatalf("postgres event QueueVersion after initial idempotency = %d; want 3", ev.QueueVersion)
 		}
 	}
 
@@ -1560,13 +1522,13 @@ func TestContract_EventPatch_DynamoDBRouterEndToEnd(t *testing.T) {
 			t.Fatalf("replay response status = %q; want %q", respReq.Status, models.StatusCompleted)
 		}
 
-		// Critical invariant: QueueVersion in DynamoDB remains 3 (no second mutation)
-		ev, err := dynStore.GetEvent(ctx, "evt_patch_01")
+		// Critical invariant: QueueVersion in PostgreSQL remains 3 (no second mutation)
+		ev, err := pgStore.GetEvent(ctx, "evt_patch_01")
 		if err != nil {
 			t.Fatalf("get event: %v", err)
 		}
 		if ev.QueueVersion != 3 {
-			t.Fatalf("dynamo event QueueVersion after replay = %d; want 3 (replayed without second mutation)", ev.QueueVersion)
+			t.Fatalf("postgres event QueueVersion after replay = %d; want 3 (replayed without second mutation)", ev.QueueVersion)
 		}
 	}
 }

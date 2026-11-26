@@ -1,4 +1,4 @@
-// Command local-bootstrap creates the local DynamoDB schema without contacting AWS.
+// Command local-bootstrap applies the local PostgreSQL schema without contacting AWS.
 package main
 
 import (
@@ -10,7 +10,7 @@ import (
 	"strings"
 
 	"micup.live/server/internal/config"
-	dynamostore "micup.live/server/internal/store/dynamo"
+	pgstore "micup.live/server/internal/store/postgres"
 )
 
 func main() {
@@ -18,45 +18,49 @@ func main() {
 	if err != nil {
 		log.Fatalf("load local configuration: %v", err)
 	}
-	if err := requireLocalEndpoint(cfg.DynamoEndpoint); err != nil {
+	if cfg.PostgresDSQLMode {
+		log.Fatal("refusing to run local-bootstrap with POSTGRES_DSQL_MODE=true")
+	}
+	if err := requireLocalDatabaseURL(cfg.DatabaseURL); err != nil {
 		log.Fatal(err)
 	}
 
 	ctx := context.Background()
-	store, err := dynamostore.New(ctx, dynamostore.Config{
-		Region:      cfg.AWSRegion,
-		Endpoint:    cfg.DynamoEndpoint,
-		TablePrefix: cfg.DynamoPrefix,
-	})
+	store, err := pgstore.New(ctx, pgstore.Config{DSN: cfg.DatabaseURL})
 	if err != nil {
-		log.Fatalf("connect to DynamoDB Local: %v", err)
+		log.Fatalf("connect to PostgreSQL: %v", err)
 	}
-	defer store.Close()
+	defer func() { _ = store.Close() }()
 
-	if err := store.EnsureTables(ctx); err != nil {
-		log.Fatalf("create local DynamoDB schema: %v", err)
+	if err := store.EnsureSchema(ctx); err != nil {
+		log.Fatalf("apply local PostgreSQL schema: %v", err)
 	}
-	log.Printf("local DynamoDB schema is ready (prefix %q)", cfg.DynamoPrefix)
+	log.Printf("local PostgreSQL schema is ready")
 }
 
-func requireLocalEndpoint(raw string) error {
+func requireLocalDatabaseURL(raw string) error {
 	if strings.TrimSpace(raw) == "" {
-		return fmt.Errorf("DYNAMO_ENDPOINT is required; refusing to use the AWS default endpoint")
+		return fmt.Errorf("DATABASE_URL is required; refusing to continue")
 	}
-	endpoint, err := url.Parse(raw)
+	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse DYNAMO_ENDPOINT: %w", err)
+		return fmt.Errorf("parse DATABASE_URL: %w", err)
 	}
-	switch strings.ToLower(endpoint.Hostname()) {
-	case "localhost", "127.0.0.1", "::1", "dynamodb":
+	switch strings.ToLower(parsed.Scheme) {
+	case "postgres", "postgresql":
+	default:
+		return fmt.Errorf("DATABASE_URL %q must use postgres:// or postgresql:// scheme", raw)
+	}
+	switch strings.ToLower(parsed.Hostname()) {
+	case "localhost", "127.0.0.1", "::1", "postgres":
 		return nil
 	default:
-		return fmt.Errorf("DYNAMO_ENDPOINT %q is not local; refusing to continue", raw)
+		return fmt.Errorf("DATABASE_URL host %q is not local; refusing to continue", parsed.Hostname())
 	}
 }
 
 func init() {
 	// Prevent the AWS SDK from probing EC2 instance metadata if this command is
-	// launched outside mise. The explicit endpoint remains the primary guard.
+	// launched outside mise.
 	_ = os.Setenv("AWS_EC2_METADATA_DISABLED", "true")
 }

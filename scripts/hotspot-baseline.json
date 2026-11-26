@@ -78,34 +78,6 @@
       "owner": "internal/queue maintainers",
       "rationale": "Canonical queue admission, stage command, rotation transition, and versioned mutation service."
     },
-    "internal/store/dynamo/import_jobs.go": {
-      "category": "backend_store",
-      "measured_lines": 881,
-      "max_lines": 881,
-      "owner": "internal/store/dynamo + internal/catalog maintainers",
-      "rationale": "DynamoDB import job store implementing M8 dispatch claims, generation assignment, progress fencing, and exhaustion reset."
-    },
-    "internal/store/dynamo/catalog_versions.go": {
-      "category": "backend_store",
-      "measured_lines": 805,
-      "max_lines": 805,
-      "owner": "internal/store/dynamo + internal/catalog maintainers",
-      "rationale": "DynamoDB catalog version store implementing M12 build reclamation, M13 transactional publication fencing, and M14 two-phase deletion reservation."
-    },
-    "internal/store/dynamo/auth.go": {
-      "category": "backend_store",
-      "measured_lines": 743,
-      "max_lines": 743,
-      "owner": "internal/store/dynamo + internal/auth + internal/account maintainers",
-      "rationale": "DynamoDB authentication and user store implementing identity claims, M10 auth epochs, and M7 assign-once account deletion tombstones."
-    },
-    "internal/store/dynamo/events.go": {
-      "category": "backend_store",
-      "measured_lines": 685,
-      "max_lines": 685,
-      "owner": "internal/store/dynamo + internal/event maintainers",
-      "rationale": "DynamoDB event store implementing M11 conditional snapshot/metadata version fencing, rotation transitions, and M7 deletion barriers."
-    },
     "web/src/pages/kj/Songbooks.jsx": {
       "category": "frontend_hotspot",
       "measured_lines": 825,
@@ -178,14 +150,6 @@
     }
   },
   "exceptions": {
-    "internal/store/dynamo/requests.go": {
-      "category": "backend_store",
-      "measured_lines": 1098,
-      "max_lines": 1098,
-      "owner": "internal/store/dynamo + internal/queue maintainers",
-      "rationale": "Consolidates atomic queue admission (M2), deletion/version coupling (M3a), retention TTL fencing (M3c), and deletion parent barriers (M7) on canonical event-requests.",
-      "removal_condition": "Remove or lower exception when shared DynamoDB transaction/condition helpers are extracted."
-    },
     "internal/catalog/service.go": {
       "category": "backend_service",
       "measured_lines": 797,

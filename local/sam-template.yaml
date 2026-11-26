@@ -5,15 +5,15 @@ Description: >-
   for `sam local invoke` and `sam local start-api`; do not deploy it.
 
 Parameters:
-  DynamoEndpoint:
+  StoreBackend:
     Type: String
-    Default: http://dynamodb:8000
+    Default: postgres
+  DatabaseURL:
+    Type: String
+    Default: postgres://micup:micup-local-password@postgres:5432/micup?sslmode=disable
   AWSEndpoint:
     Type: String
     Default: http://localstack:4566
-  DynamoTablePrefix:
-    Type: String
-    Default: micup-local-
   CatalogAssetBucket:
     Type: String
     Default: micup-app-local
@@ -38,11 +38,11 @@ Globals:
       Variables:
         APP_ENV: production
         AWS_EC2_METADATA_DISABLED: 'true'
-        DYNAMO_ENDPOINT: !Ref DynamoEndpoint
+        STORE_BACKEND: !Ref StoreBackend
+        DATABASE_URL: !Ref DatabaseURL
         S3_ENDPOINT: !Ref AWSEndpoint
         SQS_ENDPOINT: !Ref AWSEndpoint
         EMAIL_TRANSPORT: log
-        DYNAMO_TABLE_PREFIX: !Ref DynamoTablePrefix
         CATALOG_ASSET_BUCKET: !Ref CatalogAssetBucket
         CATALOG_BUILD_QUEUE_URL: !Ref CatalogBuildQueueURL
         IMPORT_JOB_QUEUE_URL: !Ref ImportJobQueueURL

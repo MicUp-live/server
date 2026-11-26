@@ -1,6 +1,6 @@
 # Automated weekly catalog garbage collection.
 # Purges unreferenced immutable S3 assets, orphan prefixes, stale import files,
-# and expired DynamoDB catalog version / import job records.
+# and expired catalog version / import job records.
 
 resource "aws_cloudwatch_log_group" "catalog_gc" {
   name              = "/aws/lambda/micup-${var.environment}-catalog-gc"
@@ -21,7 +21,6 @@ resource "aws_lambda_function" "catalog_gc" {
   environment {
     variables = merge({
       APP_ENV              = "production"
-      DYNAMO_TABLE_PREFIX  = local.dynamo_prefix
       CATALOG_ASSET_BUCKET = aws_s3_bucket.app.id
       GC_GRACE_PERIOD      = "24h"
       GC_DRY_RUN           = "false"

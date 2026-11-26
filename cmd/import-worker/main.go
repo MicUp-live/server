@@ -52,11 +52,10 @@ func initRuntime(ctx context.Context) (*workerRuntime, error) {
 		return nil, err
 	}
 	awsCfg, err := awsclient.Load(ctx, awsclient.Config{
-		Region:         cfg.AWSRegion,
-		DynamoEndpoint: cfg.DynamoEndpoint,
-		S3Endpoint:     cfg.S3Endpoint,
-		SQSEndpoint:    cfg.SQSEndpoint,
-		SESEndpoint:    cfg.SESEndpoint,
+		Region:      cfg.AWSRegion,
+		S3Endpoint:  cfg.S3Endpoint,
+		SQSEndpoint: cfg.SQSEndpoint,
+		SESEndpoint: cfg.SESEndpoint,
 	})
 	if err != nil {
 		_ = db.Close()

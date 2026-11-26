@@ -2,11 +2,11 @@
   "Parameters": {
     "APP_ENV": "production",
     "AWS_EC2_METADATA_DISABLED": "true",
-    "DYNAMO_ENDPOINT": "http://dynamodb:8000",
+    "STORE_BACKEND": "postgres",
+    "DATABASE_URL": "postgres://micup:micup-local-password@postgres:5432/micup?sslmode=disable",
     "S3_ENDPOINT": "http://localstack:4566",
     "SQS_ENDPOINT": "http://localstack:4566",
     "EMAIL_TRANSPORT": "log",
-    "DYNAMO_TABLE_PREFIX": "micup-local-",
     "CATALOG_ASSET_BUCKET": "micup-app-local",
     "CATALOG_BUILD_QUEUE_URL": "http://localstack:4566/000000000000/micup-local-catalog-build",
     "IMPORT_JOB_QUEUE_URL": "http://localstack:4566/000000000000/micup-local-import-jobs",

@@ -82,11 +82,10 @@ func loadStore(cfg config.Config) (app.Dependencies, func(), error) {
 	)
 	if needsAWS {
 		awsCfg, awsErr := awsclient.Load(context.Background(), awsclient.Config{
-			Region:         cfg.AWSRegion,
-			DynamoEndpoint: cfg.DynamoEndpoint,
-			S3Endpoint:     cfg.S3Endpoint,
-			SQSEndpoint:    cfg.SQSEndpoint,
-			SESEndpoint:    cfg.SESEndpoint,
+			Region:      cfg.AWSRegion,
+			S3Endpoint:  cfg.S3Endpoint,
+			SQSEndpoint: cfg.SQSEndpoint,
+			SESEndpoint: cfg.SESEndpoint,
 		})
 		if awsErr != nil {
 			if cfg.CatalogBuildQueueURL != "" || (cfg.ImportJobQueueURL != "" && cfg.CatalogBucket != "") {

@@ -30,7 +30,7 @@ resource "aws_iam_role" "lambda_exec" {
   }
 }
 
-# IAM Policy for API Lambda (DynamoDB, SES, S3 uploads/manifests, SQS enqueue, API logs)
+# IAM Policy for API Lambda (SES, S3 uploads/manifests, SQS enqueue, API logs)
 resource "aws_iam_role_policy" "lambda_policy" {
   name = "micup-${var.environment}-lambda-policy"
   role = aws_iam_role.lambda_exec.id
@@ -47,28 +47,6 @@ resource "aws_iam_role_policy" "lambda_policy" {
         ]
         Resource = [
           "${aws_cloudwatch_log_group.lambda.arn}:*"
-        ]
-      },
-      # Scoped DynamoDB Access to MicUp tables and GSIs
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:BatchGetItem",
-          "dynamodb:BatchWriteItem",
-          "dynamodb:ConditionCheckItem",
-          "dynamodb:TransactWriteItems",
-          "dynamodb:TransactGetItems",
-          "dynamodb:DescribeTable"
-        ]
-        Resource = [
-          "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.dynamo_prefix}*",
-          "arn:aws:dynamodb:${var.aws_region}:${data.aws_caller_identity.current.account_id}:table/${local.dynamo_prefix}*/index/*"
         ]
       },
       # SES Sending Permissions
@@ -143,29 +121,6 @@ resource "aws_iam_role_policy" "catalog_worker_policy" {
         Resource = ["${aws_cloudwatch_log_group.catalog_worker.arn}:*"]
       },
       {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:ConditionCheckItem",
-          "dynamodb:TransactWriteItems"
-        ]
-        Resource = [
-          aws_dynamodb_table.songbooks.arn,
-          "${aws_dynamodb_table.songbooks.arn}/index/*",
-          aws_dynamodb_table.catalog_versions.arn,
-          "${aws_dynamodb_table.catalog_versions.arn}/index/*",
-          aws_dynamodb_table.catalog_changes.arn,
-          "${aws_dynamodb_table.catalog_changes.arn}/index/*",
-          aws_dynamodb_table.import_jobs.arn,
-          "${aws_dynamodb_table.import_jobs.arn}/index/*"
-        ]
-      },
-      {
         Effect   = "Allow"
         Action   = ["s3:ListBucket"]
         Resource = [aws_s3_bucket.app.arn]
@@ -201,21 +156,6 @@ resource "aws_iam_role_policy" "import_worker_policy" {
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = ["${aws_cloudwatch_log_group.import_worker.arn}:*"]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:ConditionCheckItem",
-          "dynamodb:TransactWriteItems"
-        ]
-        Resource = [
-          aws_dynamodb_table.import_jobs.arn,
-          "${aws_dynamodb_table.import_jobs.arn}/index/*",
-          aws_dynamodb_table.songbooks.arn,
-          "${aws_dynamodb_table.songbooks.arn}/index/*"
-        ]
       },
       {
         Effect   = "Allow"
@@ -255,16 +195,6 @@ resource "aws_iam_role_policy" "compaction_dispatcher_policy" {
         Resource = ["${aws_cloudwatch_log_group.compaction_dispatcher.arn}:*"]
       },
       {
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"]
-        Resource = [
-          aws_dynamodb_table.songbooks.arn,
-          "${aws_dynamodb_table.songbooks.arn}/index/*",
-          aws_dynamodb_table.catalog_changes.arn,
-          "${aws_dynamodb_table.catalog_changes.arn}/index/*"
-        ]
-      },
-      {
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = [aws_sqs_queue.catalog_build.arn]
@@ -292,14 +222,6 @@ resource "aws_iam_role_policy" "import_reconciler_policy" {
         Resource = ["${aws_cloudwatch_log_group.import_reconciler.arn}:*"]
       },
       {
-        Effect = "Allow"
-        Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Query", "dynamodb:Scan", "dynamodb:ConditionCheckItem"]
-        Resource = [
-          aws_dynamodb_table.import_jobs.arn,
-          "${aws_dynamodb_table.import_jobs.arn}/index/*"
-        ]
-      },
-      {
         Effect   = "Allow"
         Action   = ["sqs:SendMessage"]
         Resource = [aws_sqs_queue.import_jobs.arn]
@@ -325,27 +247,6 @@ resource "aws_iam_role_policy" "catalog_gc_policy" {
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = ["${aws_cloudwatch_log_group.catalog_gc.arn}:*"]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "dynamodb:GetItem",
-          "dynamodb:PutItem",
-          "dynamodb:UpdateItem",
-          "dynamodb:DeleteItem",
-          "dynamodb:Query",
-          "dynamodb:Scan",
-          "dynamodb:ConditionCheckItem",
-          "dynamodb:TransactWriteItems"
-        ]
-        Resource = [
-          aws_dynamodb_table.songbooks.arn,
-          "${aws_dynamodb_table.songbooks.arn}/index/*",
-          aws_dynamodb_table.catalog_versions.arn,
-          "${aws_dynamodb_table.catalog_versions.arn}/index/*",
-          aws_dynamodb_table.import_jobs.arn,
-          "${aws_dynamodb_table.import_jobs.arn}/index/*"
-        ]
       },
       {
         Effect   = "Allow"
@@ -391,7 +292,6 @@ resource "aws_lambda_function" "api" {
       PUBLIC_BASE_URL          = "https://${var.domain_name}"
       WEBAUTHN_RP_ID           = var.domain_name
       WEBAUTHN_ORIGINS         = "https://${var.domain_name},https://www.${var.domain_name}"
-      DYNAMO_TABLE_PREFIX      = local.dynamo_prefix
       AUTH_SECRET              = random_password.auth_secret.result
       CORS_ALLOW_ORIGIN        = "https://${var.domain_name},https://www.${var.domain_name},https://player.${var.domain_name}"
       CATALOG_ASSET_BUCKET     = aws_s3_bucket.app.id

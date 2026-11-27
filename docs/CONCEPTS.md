@@ -84,42 +84,27 @@ Keep these policies separate:
 
 ## Accepted configurable hosting policies
 
-Product decision accepted 2026-10-10. These are intended defaults for future
-hosting-policy work, not a claim that the current application implements them.
+Product decision accepted 2026-10-10 and scoped on 2026-11-26 to Tier 1 live-hosting
+capabilities (pre-call song replacement, absent singer deferral, and closing intake).
 See C11 in [CONTRACTS.md](CONTRACTS.md) and HP1 in [TASKS.md](../TASKS.md).
 
 Hosts configure policies per event. Keep sensible defaults so creating a show
 requires no policy questionnaire; place alternatives in advanced show settings.
-The following labels describe behavior, not new API fields or enum values.
 
-| Policy | Accepted default | Configurable alternative / explicit host action |
+| Policy | Status | Behavior |
 | --- | --- | --- |
-| Empty singer queue | Retain participation for the night; skip until a song is ready | Remove from rotation when empty; subsequent participation follows the selected rotation's newcomer rules |
-| Singer changes next song | Allow before being called; preserve the request's place | Require host action for all replacements; once called, replacement always requires host action |
-| Absent singer | Host may defer without recording a completed performance | Host chooses later placement or removes the participant; never infer completion from absence |
-| Duet turn accounting | Host selects whose turn the performance consumes | A show may default to the submitting participant or all explicitly linked participants, with an explicit host override |
-| Stage protection | Automatic placement preserves the first three live positions; explicit host override allowed | Strict protection can disable ordinary host reorder overrides; deliberate defer/remove actions remain available |
-| Closing intake | Stop new submissions while the existing queue can finish | Host may reopen intake or separately end the show; closing never implicitly clears or completes requests |
-
-Some of these are actions rather than switches. Do not invent configuration just
-to merge distinct actions such as close, end, remove, and complete. In FCFS/manual
-modes, retained participation does not create a reserved queue position; the
-selected rotation determines placement. Retained membership must not stall the
-show when no song is ready or automatically displace already-called singers.
-
-Participant identity must be separate from display name in the future model:
-two people named Alex can be distinct, renaming does not change whose turn it is,
-and one shared device need not mean one singer. This is a correctness rule, not
-a host option, and does not require singer accounts. The current implementation
-uses normalized names; migration and legacy-client mapping are required before
-claiming the new identity contract is met. A duet is not inferred by parsing a
-name such as “Alex & Sam.”
+| Singer changes next song | **Implemented (HP1)** | Default (`allow_song_replacement = true` on new shows): authorized singer holding a separate `edit_token` may swap their song while `pending` or `accepted`, preserving request ID, rank, round, and slot. Configurable alternative: host-only (`allow_song_replacement = false`). Once called (`up_next`), replacement always requires host action. |
+| Absent singer | **Implemented (HP1)** | Explicit host **Defer** action bumps an `accepted` or `up_next` singer down 3 active spots (or to the end of the active queue if fewer remain) and returns `up_next` to `accepted` without recording a completed performance. Idempotent via `Idempotency-Key`. |
+| Closing intake | **Live** | Stop new submissions while the existing queue can finish (`paused` vs `ended`). Reopening does not clear or complete requests. |
+| Empty singer queue retention | **Won't Do** | Deferred; Fair Priority already weights returning singers naturally without retaining empty ghost slots. |
+| Stage protection strict mode | **Won't Do** | Automatic top-3 stage protection remains active; locking hosts out of manual drag-and-drop reorder is out of scope. |
+| Separate participant identity & duet turn accounting | **Won't Do** | Deferred; normalized singer names remain the rotation key across browser and OpenKJ adapters. |
 
 Configuration never disables tenant isolation, request ownership checks, honest
 connection/submission status, atomic queue/version changes, or recoverable
-failure behavior. A cancellation capability does not automatically authorize
-song replacement. Changes to policy are host-authorized, explicit, and visible
-to affected clients; they must not silently rewrite earlier performances.
+failure behavior. A cancellation capability does not authorize song replacement.
+Changes to policy are host-authorized, explicit, and visible to affected clients;
+they must not silently rewrite earlier performances.
 
 ## Library and catalog lifecycle
 

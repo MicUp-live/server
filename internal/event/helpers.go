@@ -94,4 +94,7 @@ func applyEventSettingsUpdate(event *models.Event, update models.EventUpdate) {
 	if update.AllowWriteIns != nil {
 		event.AllowWriteIns = *update.AllowWriteIns
 	}
+	if update.AllowSongReplacement != nil {
+		event.AllowSongReplacement = *update.AllowSongReplacement
+	}
 }

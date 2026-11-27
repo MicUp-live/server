@@ -23,7 +23,14 @@ export function reconcileSingerRequests(prevRequests, queueItems = []) {
     return (prevRequests || []).map(myReq => {
         const found = queueItems.find(q => q.id === myReq.id)
         if (found) {
-            return { ...myReq, status: found.status, round: found.round || myReq.round || 1 }
+            return {
+                ...myReq,
+                status: found.status,
+                round: found.round || myReq.round || 1,
+                song_title: found.song_title || myReq.song_title,
+                song_artist: found.song_artist ?? myReq.song_artist,
+                key_change: found.key_change ?? myReq.key_change ?? 0,
+            }
         }
         if (myReq.status === 'up_next' || myReq.status === 'accepted') {
             return {
@@ -43,7 +50,7 @@ export function filterSingerRequests(requests = []) {
     return { active, completed, declined }
 }
 
-export function useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClose, onEventJoined, onEventStatusChange }) {
+export function useSingerQueue({ songbookId, eventId, eventStatus, allowSongReplacement: initialAllowSongReplacement = false, isOpen, onClose, onEventJoined, onEventStatusChange }) {
     const [screenName, setScreenNameState] = useState(() => getScreenName(user.value))
     const [showScreenNameModal, setShowScreenNameModal] = useState(false)
 
@@ -56,6 +63,7 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClo
     const [loading, setLoading] = useState(!!eventId)
     const [currentRound, setCurrentRound] = useState(1)
     const [liveEventStatus, setLiveEventStatus] = useState(eventStatus || null)
+    const [allowSongReplacement, setAllowSongReplacement] = useState(!!initialAllowSongReplacement)
     const [error, setError] = useState('')
     const [noEvent, setNoEvent] = useState(!eventId)
     const [joinCodeInput, setJoinCodeInput] = useState('')
@@ -65,6 +73,10 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClo
     useEffect(() => {
         setLiveEventStatus(eventStatus || null)
     }, [eventStatus, eventId])
+
+    useEffect(() => {
+        setAllowSongReplacement(!!initialAllowSongReplacement)
+    }, [initialAllowSongReplacement, eventId])
 
     const effectiveEventStatus = liveEventStatus || eventStatus || null
 
@@ -136,6 +148,7 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClo
         if (eventId && data.event_id && data.event_id !== eventId) return
 
         if (Number.isInteger(data.current_round)) setCurrentRound(data.current_round)
+        if (data.status !== 'no_event') setAllowSongReplacement(!!data.allow_song_replacement)
         if (data.event_status) {
             setLiveEventStatus(data.event_status)
             if (eventId && data.event_status !== eventStatus) {
@@ -233,6 +246,47 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClo
         }
     }, [isOpen, onClose])
 
+    const replaceMyRequestSong = async (reqId, payload) => {
+        const originatingKey = targetKey
+        if (!originatingKey || !eventId) return { ok: false, error: 'Show not connected' }
+        const originatingStored = getSingerRequests(originatingKey)
+        const myReq = originatingStored.find(r => r.id === reqId)
+        if (!myReq || !myReq.edit_token) {
+            return { ok: false, error: 'This request cannot be edited from this device.' }
+        }
+        try {
+            const updated = await api.patch(
+                `/events/${eventId}/requests/${reqId}/song`,
+                payload,
+                { 'X-Edit-Token': myReq.edit_token },
+            )
+            const nextOriginating = updateSingerRequests(originatingKey, (curr) =>
+                curr.map(r => r.id === reqId ? {
+                    ...r,
+                    song_id: updated.song_id || '',
+                    song_title: updated.song_title,
+                    song_artist: updated.song_artist,
+                    is_write_in: !!updated.is_write_in,
+                    key_change: updated.key_change || 0,
+                    notes: updated.notes || '',
+                } : r)
+            )
+            if (activeTargetKeyRef.current === originatingKey) {
+                setMyRequests(nextOriginating)
+                showToast(`Updated your song to "${updated.song_title}"!`)
+                refreshQueue()
+            }
+            return { ok: true, request: updated }
+        } catch (err) {
+            const msg = err?.data?.message || err?.data?.detail || err?.message || 'Could not change song'
+            if (activeTargetKeyRef.current === originatingKey) {
+                showToast(msg, 'error')
+                refreshQueue()
+            }
+            return { ok: false, error: msg }
+        }
+    }
+
     const cancelMyRequest = async (reqId) => {
         const originatingKey = targetKey
         if (!originatingKey || !eventId) return
@@ -284,6 +338,7 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClo
         loading,
         currentRound,
         eventStatus: effectiveEventStatus,
+        allowSongReplacement,
         error,
         noEvent,
         joinCodeInput,
@@ -299,6 +354,7 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClo
         myUpNext,
         dismissDeclinedRequest,
         cancelMyRequest,
+        replaceMyRequestSong,
         handleJoin,
         refreshQueue,
     }

@@ -43,8 +43,8 @@ export function setOnTokenInvalidated(callback) {
  * Make an authenticated API request.
  * Automatically includes Authorization header if logged in.
  */
-async function request(method, path, body = null) {
-    const headers = { 'Content-Type': 'application/json' }
+async function request(method, path, body = null, extraHeaders = null) {
+    const headers = { 'Content-Type': 'application/json', ...(extraHeaders || {}) }
     const isDeleteAccount = method === 'DELETE' && path === '/auth/me'
 
     if (accessToken) {
@@ -157,8 +157,8 @@ export class ApiError extends Error {
 /** Convenience API object. */
 export const api = {
     get: (path) => request('GET', path),
-    post: (path, body) => request('POST', path, body),
-    put: (path, body) => request('PUT', path, body),
-    patch: (path, body) => request('PATCH', path, body),
-    delete: (path, body) => request('DELETE', path, body),
+    post: (path, body, headers) => request('POST', path, body, headers),
+    put: (path, body, headers) => request('PUT', path, body, headers),
+    patch: (path, body, headers) => request('PATCH', path, body, headers),
+    delete: (path, body, headers) => request('DELETE', path, body, headers),
 }

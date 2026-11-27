@@ -20,7 +20,7 @@ Vignettes exercise multi-role browser workflows using Host (Desktop), Stage Disp
 | **C08** | Account Export and Deletion | Partial | `account-privacy` | A disposable local host exports its account, songbook, and show, confirms deletion, and loses login and public show access. Partial-failure/recovery and tenant isolation remain backend evidence. |
 | **C09** | Browser Continuity | Partial | `queue-lifecycle`, `favorites-and-edge-cases`, `fair-priority-rotation`, `kiosk-patron-session`, `host-reorder-and-reconnection` | Kiosk clears a patron's search/form after 45 seconds idle; reconnect after offline recovery refreshes queue position. Unchanged responses, long backoff, visibility lifecycle, and stale-event races remain broader polling gaps. |
 | **C10** | Persisted Data & Operational Compatibility | No | - | Vignettes do not verify old data, interrupted migrations, rollback, or internal `metadata_version`. |
-| **C11** | Configurable Show Policies (accepted target; not implemented) | No | - | HP1 remains open. `favorites-and-edge-cases` exercises existing write-in and manual-staging options, not C11 policies; neither vignette verifies C11 acceptance scenarios. |
+| **C11** | Configurable Show Policies (Tier 1) | Partial | `show-policies` | Exercises pre-call song swap preserving #1 spot, call-to-stage locking swap, host Defer bumping an absent singer down 3 spots without marking completed, and disabling `allow_song_replacement` in Show Settings. Capability-token separation, write-in fencing, and idempotency replay remain backend/PostgreSQL test evidence. |
 
 ---
 
@@ -52,6 +52,7 @@ Vignettes exercise multi-role browser workflows using Host (Desktop), Stage Disp
 | **Host Queue Reordering** | - | - | Covered by `host-reorder-and-reconnection` | Host moves a request ahead while the called performer remains first; Stage and reconnecting Singer views converge. |
 | **Show Restart** | - | - | Partial: `host-reorder-and-reconnection` | End and reopen without clearing; the public queue and singer position remain. Interrupted clearing and retention need backend tests. |
 | **Account Export & Deletion** | - | - | Partial: `account-privacy` | A local disposable host exports profile, songbook, and show and deletes the account; sign-in and public show access are denied afterward. |
+| **Pre-Call Song Swap & Absent Deferral (HP1)** | - | - | Covered by `show-policies` | Singer swaps queued song pre-call keeping spot, call-to-stage locks swap, host Defer bumps absent singer down 3 spots with 0 history, and disabling policy hides Swap. |
 
 ### Additional Local Browser Assertions
 
@@ -87,6 +88,7 @@ All reports target `http://localhost:3000`; no production resources were used.
 | `account-privacy` | `output/2026-11-25T17-00-51-account-privacy` | 3 | 0 | 0 | 0 |
 | `account-privacy` (local request guard) | `output/2026-11-25T17-04-39-account-privacy` | 3 | 0 | 0 | 0 |
 | `account-privacy` (cleanup follow-up) | `output/2026-11-25T17-05-26-account-privacy` | 3 | 0 | 0 | 0 |
+| `show-policies` (2026-11-26, local PG16) | `output/2026-11-27T01-24-44-show-policies` | 4 | 0 | 0 | 0 |
 
 The two informational admission findings are the expected `409 max_active_limit`
 and `429 submission_cooldown` responses; assertions confirm neither request was

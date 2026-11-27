@@ -15,10 +15,12 @@
 
 ### 1. Hosting, Queue & Songbook Capabilities
 
-- [ ] **HP1 — Implement configurable show policies with accepted defaults**
-  - Accepted product defaults documented in [CONCEPTS.md](docs/CONCEPTS.md#accepted-configurable-hosting-policies) and [CONTRACTS.md](docs/CONTRACTS.md) (C11).
-  - Scope: retain empty participants by default, preserve place on authorized pre-call song replacement, explicit absence deferral, distinct participant identity and configurable duet accounting, and explicit host stage override (`paused` vs `ended` intake separation is already live).
-  - Acceptance: map every C11 scenario to named tests covering defaults and alternatives, supported rotations/adapters, settings races (M11), transaction rollback, tenant denial, OpenAPI sync, real DynamoDB Local, and browser behavior.
+- [x] **HP1 — Configurable show policies (Tier 1: pre-call song replacement & absent singer deferral)**
+  - Scoped on 2026-11-26 in [CONCEPTS.md](docs/CONCEPTS.md#accepted-configurable-hosting-policies) and [CONTRACTS.md](docs/CONTRACTS.md) (C11).
+  - Scope: pre-call singer song replacement (`allow_song_replacement` toggle defaulting `true` on new shows, domain-separated `edit_token`, locked once called/`up_next`, host can always edit) and one-click host absent-singer deferral (bumps down 3 active spots, returns `up_next` to `accepted` without incrementing completed history, idempotent via `Idempotency-Key`). `paused` vs `ended` intake separation is already live.
+  - **Won't Do (2026-11-26):** Empty singer queue retention (redundant under Fair Priority), strict stage-override locking, and separate participant identity / duet turn accounting.
+  - **Completed locally, 2026-11-26:** Implemented DSQL-compatible migration (`0002_show_policies.sql`), domain-separated `GenerateEditToken`/`ValidateEditToken`, `ReplaceRequestSongAtomic` (`FOR UPDATE` fenced), `PlanDeferRequest`/`DeferEventRequest` (version-fenced bounded retry + `Idempotency-Key` replay), HTTP routes (`PATCH /api/v1/events/{id}/requests/{requestID}/song`, `POST /api/v1/events/{id}/requests/{requestID}/defer`), OpenAPI/API Gateway route sync, and host/singer UI (`ShowPolicyToggles`, `RequestCard`, `SingerActiveRequests`, `ReplaceSongModal`).
+  - **Verification:** `mise run test` (all Go packages + PostgreSQL 16 integration tests including `TestEditAndCancelTokensAreDomainSeparated`, `TestPlanDeferRequest_*`, `TestPostgresReplaceRequestSongAtomic_PreservesPositionAndFencesCallToStage`, `TestRouterShowPolicies_SongReplacementAndAbsentDeferral`), `mise run check:fitness`, `npm --prefix web test` (199/199 including `useSingerQueuePolicies.test.js`), `npm --prefix web run build`, `npm --prefix scripts/vignettes test` (12/12), Playwright vignette `show-policies` (`output/2026-11-27T01-24-44-show-policies`, 4 beats, 0 findings on local PostgreSQL 16), and `git diff --check` all passed. Zero-context read-only diff review completed with all High/Medium findings resolved. No production deployment performed yet.
 
 - [ ] **Host Queue Version Resolution & Playback Stamping**
   - In `LiveQueue.jsx`, display singer-selected versions (`SC8101-02 • Singer Selected`) or an inline version dropdown for host's choice.

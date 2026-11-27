@@ -17,6 +17,7 @@ export function RequestList({
     onMoveRequest,
     onUpdateRequestRound,
     onUpdateStatus,
+    onDeferRequest,
     onDeleteRequest,
     onCopySongInfo,
     onEditRequest,
@@ -211,6 +212,7 @@ export function RequestList({
                             onMoveRequest={onMoveRequest}
                             onUpdateRequestRound={onUpdateRequestRound}
                             onUpdateStatus={onUpdateStatus}
+                            onDeferRequest={onDeferRequest}
                             onDeleteRequest={onDeleteRequest}
                             onCopySongInfo={onCopySongInfo}
                             onEditRequest={onEditRequest}

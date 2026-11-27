@@ -313,62 +313,41 @@ nor preserves epochs or deleting tombstones and is unsafe after resets or interr
 [authentication recovery boundary](../RUNBOOK.md#password-reset-authentication-epochs) and
 [interrupted account deletion recovery](../RUNBOOK.md#recover-interrupted-account-deletion).
 
-## C11 — Configurable show policies (accepted target; not implemented)
+## C11 — Configurable show policies (Tier 1 scoped 2026-11-26)
 
-The defaults and alternatives in [CONCEPTS.md](CONCEPTS.md#accepted-configurable-hosting-policies)
-were accepted on 2026-10-10. HP1 in TASKS.md tracks implementation. C01–C10 still
-apply to every policy choice. Existing API behavior remains authoritative until
-an intentional additive contract/migration introduces these capabilities.
+The Tier 1 subset of [CONCEPTS.md](CONCEPTS.md#accepted-configurable-hosting-policies)
+is tracked under HP1 in TASKS.md. C01–C10 still apply to every policy choice.
+Empty singer queue retention, strict stage-override locking, and separate
+participant identity / duet turn accounting were explicitly marked **Won't Do**
+on 2026-11-26.
 
-**Configuration boundary:** effective policies belong to the event. Only an
-appropriately authorized host operation may change them. Defaults apply to new
-shows; do not reinterpret existing shows or omitted fields in older clients
-without a documented migration. Unsupported values/combinations must be rejected,
-not silently replaced. All adapters invoke the same policy decisions.
-
-Policy changes that affect queue interpretation must commit their effective
-policy, resulting queue changes, and observable version atomically, with a stale
-version conflict or bounded reload/recompute. Failure preserves the prior policy
-and queue. Do not split an oversized policy transition into visible partial
-updates. Preserve M11's conditional settings boundary when implementing this target.
+**Configuration boundary:** `allow_song_replacement` belongs to the event and is
+changed only by an authorized host operation under M11's conditional snapshot
+boundary (`queue_version` + `metadata_version`). New shows default to `true`;
+existing shows migrate with `FALSE` so prior shows are not silently reinterpreted.
 
 **Acceptance scenarios required:**
 
-- **Empty queue:** a participant with no next song does not block others. Default
-  membership survives; adding a song uses the selected rotation and preserves
-  stage protection. Under removal-on-empty, returning follows newcomer rules.
-- **Replacement:** an authorized singer changes their next song before the call
-  without losing request identity/position or consuming another slot. Concurrent
-  call-to-stage fences the replacement; host-only mode denies singer replacement.
-  Validate song availability and existing pitch policy. Define an edit capability
-  separately from cancellation and test wrong-participant denial.
-- **Absence:** default deferral is an explicit host action. It changes placement
-  without incrementing completed-performance history. Permanent removal remains
-  distinct; retries do not defer twice. Specify the placement rule and restoration
-  behavior before implementation, including the currently called participant.
-- **Identity and duets:** two same-name participants remain distinct, renaming
-  preserves membership, and shared-device users remain separable. A host-selected
-  duet turn owner is explicit. Submitter/all-participant alternatives consume the
-  chosen turns once on completion, not once per message retry. Define how
-  legacy name-only callers map without silently merging distinct participants.
-- **Stage override:** automatic placement always protects the first three live
-  positions. Default explicit host override succeeds with the appropriate
-  authority; strict mode rejects ordinary protected-position reorder. Deliberate
-  deferral/removal cannot leave an unavailable singer blocking the show.
-- **Closing:** closing admission rejects new submissions while queued performances
-  remain actionable. A submission racing closure is fenced at commit. Reopening
-  does not clear the queue; end/restart remain distinct operations. Reuse existing
-  paused-intake semantics where compatible rather than inventing a second state.
-- **Policy change:** test defaults, each alternative, invalid inputs, old records,
-  omitted fields, cross-tenant denial, concurrent settings/queue changes, storage
-  failure, and consistent singer/host/stage/kiosk projections. Inapplicable
-  rotation options must be explained in the UI and handled consistently by APIs.
-
-Future policy refinements need explicit documented semantics; acceptance of
-configurability does not mean every combination is supported automatically.
-Before implementation, record exact deferral placement, identity/capability
-migration, and duet history representation under HP1. These details must not
-be invented differently by individual adapters or mistaken for existing behavior.
+- **Replacement:** an authorized singer holding the domain-separated `edit_token`
+  changes their queued song (`PATCH /api/v1/events/{id}/requests/{rid}/song`)
+  while `pending` or `accepted` without losing request identity, rank, round,
+  status, or consuming another slot. Concurrent call-to-stage (`up_next`) or
+  policy disable is fenced atomically at PostgreSQL commit time (`409`/`403`).
+  Host-only mode (`allow_song_replacement = false`) denies singer replacement
+  while host edits remain available. Respect `allow_key_change` and
+  `allow_write_ins`. Cancellation tokens (`cancel_token`) must not authorize
+  replacement, and edit tokens (`edit_token`) must not authorize cancellation;
+  wrong-request or wrong-event tokens return `403`.
+- **Absence deferral:** explicit host action (`POST /api/v1/events/{id}/requests/{rid}/defer`)
+  bumps an `accepted` or `up_next` request down 3 active spots (or to the end of
+  the active queue if fewer remain) and transitions `up_next` back to `accepted`
+  without setting `completed_at` or incrementing completed-performance history.
+  Pending/terminal requests return `409`. Permanent removal remains distinct;
+  `Idempotency-Key` replay ensures retries never defer twice, and optional
+  `expected_queue_version` enforces stale-snapshot conflict detection.
+- **Closing:** closing admission (`paused`) rejects new submissions while
+  queued performances remain actionable; reopening does not clear the queue,
+  and `ended` remains distinct (already live).
 
 ## Refactor procedure and completion evidence
 

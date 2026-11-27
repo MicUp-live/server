@@ -23,6 +23,7 @@ export function ShowSettingsModal({
         max_active_per_singer: 0,
         allow_key_change: true,
         allow_write_ins: false,
+        allow_song_replacement: true,
         recurring: false,
         kiosk_pin: '',
     })
@@ -36,6 +37,7 @@ export function ShowSettingsModal({
                 max_active_per_singer: currentEvent.max_active_per_singer || 0,
                 allow_key_change: currentEvent.allow_key_change !== false,
                 allow_write_ins: !!currentEvent.allow_write_ins,
+                allow_song_replacement: !!currentEvent.allow_song_replacement,
                 recurring: !!currentEvent.recurring,
                 kiosk_pin: currentEvent.kiosk_pin || '',
             })

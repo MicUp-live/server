@@ -263,6 +263,28 @@ var ErrAdmissionConflict = errors.New("request admission conflict")
 // ErrEventNotActive means an admission transaction found that its event no longer accepts requests.
 var ErrEventNotActive = errors.New("event is not active")
 
+// ErrEventEnded means a mutation found that its event has ended.
+var ErrEventEnded = errors.New("event has ended")
+
+// ErrSongReplacementDisabled means the event does not allow singer-initiated song replacement.
+var ErrSongReplacementDisabled = errors.New("song replacement is not enabled for this event")
+
+// ErrWriteInsDisabled means the event does not allow write-in songs.
+var ErrWriteInsDisabled = errors.New("write-in requests are not enabled for this event")
+
+// ErrRequestAlreadyCalled means a request is already called (up_next) or terminal and cannot be self-replaced.
+var ErrRequestAlreadyCalled = errors.New("request has already been called or finalized")
+
+// SongReplacementUpdate specifies the song fields updated atomically during pre-call replacement.
+type SongReplacementUpdate struct {
+	SongID     string
+	IsWriteIn  bool
+	SongTitle  string
+	SongArtist string
+	KeyChange  int
+	Notes      string
+}
+
 // RequestStore persists live song requests and atomic, versioned, idempotent queue mutations.
 type RequestStore interface {
 	CreateRequest(ctx context.Context, req *models.SongRequest) error
@@ -270,6 +292,7 @@ type RequestStore interface {
 	GetRequest(ctx context.Context, id string) (*models.SongRequest, error)
 	ListRequestsByEvent(ctx context.Context, eventID string) ([]*models.SongRequest, error)
 	UpdateRequest(ctx context.Context, req *models.SongRequest) error
+	ReplaceRequestSongAtomic(ctx context.Context, eventID, requestID string, replacement SongReplacementUpdate) (*models.SongRequest, int64, error)
 	DeleteRequest(ctx context.Context, id string) error
 	DeleteEventRequestAtomic(ctx context.Context, eventID, requestID string) error
 	ReorderRequests(ctx context.Context, eventID string, orderedIDs []string) error

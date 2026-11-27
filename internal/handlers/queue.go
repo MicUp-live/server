@@ -149,7 +149,7 @@ func (h *QueueHandler) GetEventPublicQueue(w http.ResponseWriter, r *http.Reques
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("X-Queue-Version", strconv.FormatInt(ev.QueueVersion, 10))
-	_ = json.NewEncoder(w).Encode(map[string]interface{}{
+	payload := map[string]interface{}{
 		"event_id":         ev.ID,
 		"event_name":       ev.Name,
 		"venue_name":       ev.VenueName,
@@ -164,7 +164,11 @@ func (h *QueueHandler) GetEventPublicQueue(w http.ResponseWriter, r *http.Reques
 		"current_round":    currentRound,
 		"queue_version":    ev.QueueVersion,
 		"queue":            items,
-	})
+	}
+	if ev.AllowSongReplacement {
+		payload["allow_song_replacement"] = true
+	}
+	_ = json.NewEncoder(w).Encode(payload)
 }
 
 // ListEventRequests returns all requests for an event to the host.

@@ -56,6 +56,34 @@ export function ShowPolicyToggles({ settingsForm, setSettingsForm }) {
                     </div>
                 </label>
             </div>
+
+            {/* Pre-Call Song Replacement Toggle */}
+            <div style={{
+                background: 'var(--color-surface-alt)',
+                border: '1px solid var(--color-border)',
+                borderRadius: 'var(--radius-lg)',
+                padding: 'var(--space-4)',
+                marginBottom: 'var(--space-4)',
+            }}>
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', cursor: 'pointer' }}>
+                    <input
+                        type="checkbox"
+                        checked={!!settingsForm.allow_song_replacement}
+                        onChange={e => setSettingsForm(prev => ({ ...prev, allow_song_replacement: e.target.checked }))}
+                        style={{ marginTop: '3px' }}
+                    />
+                    <div>
+                        <div style={{ fontSize: 'var(--text-sm)', fontWeight: 'bold', color: 'var(--color-text)' }}>
+                            🔄 Allow Pre-Call Song Changes
+                        </div>
+                        <div style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', marginTop: '2px', lineHeight: 1.4 }}>
+                            {settingsForm.allow_song_replacement
+                                ? 'Enabled: Singers can swap their queued song before being called to stage while keeping their spot.'
+                                : 'Disabled: Only you can change a queued song after submission.'}
+                        </div>
+                    </div>
+                </label>
+            </div>
         </>
     )
 }

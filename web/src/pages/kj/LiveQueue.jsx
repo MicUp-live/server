@@ -318,6 +318,7 @@ function SelectedShowQueue({
                     onMoveRequest={(index, direction, group) => mutations.moveRequest(index, direction, group, activeRequests)}
                     onUpdateRequestRound={mutations.updateRequestRound}
                     onUpdateStatus={handleUpdateStatus}
+                    onDeferRequest={mutations.deferRequest}
                     onDeleteRequest={mutations.deleteRequest}
                     onCopySongInfo={mutations.copySongInfo}
                     onEditRequest={(req) => setEditModalTarget(req)}

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Initialize OpenTofu working directory"
+set -euo pipefail
+
+exec tofu -chdir=infra init "$@"

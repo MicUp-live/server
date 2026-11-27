@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Compile canonical reference catalog (reusing cached immutable sources and checking rolling sources)"
+set -euo pipefail
+
+export REFERENCE_S3_BUCKET="${REFERENCE_S3_BUCKET:-$(tofu -chdir=infra output -raw s3_bucket_name 2>/dev/null || echo "micup-app-production-936ec344")}"
+exec go run ./cmd/compile-reference -out ./web/public/reference/v1 -archive-dir ./dist/reference/v1/sources "$@"

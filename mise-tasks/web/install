@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Install locked frontend dependencies"
+#MISE dir="web"
+set -euo pipefail
+
+exec npm ci "$@"

@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Poll and process local SQS queues for import jobs and catalog builds"
+#MISE depends=["local:bootstrap"]
+set -euo pipefail
+
+trap 'kill 0' EXIT INT TERM
+go run ./cmd/import-worker -poll &
+go run ./cmd/catalog-worker -poll &
+wait

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Validate OpenTofu configuration without cloud credentials or remote state"
+set -euo pipefail
+
+tofu -chdir=infra init -backend=false -input=false
+exec tofu -chdir=infra validate "$@"

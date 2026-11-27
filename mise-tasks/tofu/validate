@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Validate OpenTofu configuration files"
+set -euo pipefail
+
+exec tofu -chdir=infra validate "$@"

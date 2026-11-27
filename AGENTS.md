@@ -30,7 +30,7 @@ concepts and contract IDs affected by the change.
 | [TASKS.md](TASKS.md) | Active priorities, unresolved findings, acceptance criteria, and dated evidence |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System design and implementation context |
 | [RUNBOOK.md](RUNBOOK.md) | Deployment, incident response, and recovery procedures |
-| [.mise.toml](.mise.toml) | Tool versions, environment, and task commands |
+| [.mise.toml](.mise.toml) & [mise-tasks/](mise-tasks/) | Tool versions, environment, composite tasks, and executable file-based tasks |
 
 Requirements, accepted future behavior, current implementation, and verified
 production behavior are different things. Check historical claims against
@@ -151,8 +151,12 @@ make checks pass.
 
 ## Local commands and data
 
+Run `mise tasks ls` to list all available tasks (and `mise tasks info <task>`
+to inspect dependencies and source). Common commands:
+
 ```bash
 mise install
+mise tasks ls                  # List all available tasks
 mise run python:install        # Python dependencies in the mise-managed .venv
 mise run db:up                 # Local PostgreSQL 16 (alias: mise run pg:up)
 mise run local:up              # Full local emulator setup (PostgreSQL 16 + LocalStack)
@@ -165,6 +169,25 @@ mise run test:all              # Backend + frontend test suites
 mise run check:fitness
 mise run openapi:check
 ```
+
+### Authoring mise tasks
+
+- **File-based tasks (`mise-tasks/`)**: Put executable leaf tasks under
+  `mise-tasks/` (`chmod +x`). Subdirectory paths map to `:` namespaces (for
+  example, `mise-tasks/db/migrate/production` becomes `db:migrate:production`),
+  and `_default` adopts its parent directory name (`mise-tasks/dev/_default`
+  becomes `dev`). Declare task metadata with `#MISE` headers (`description`,
+  `depends`, `dir`, `sources`, `alias`).
+- **Shell & script conventions**: For Bash tasks, start with
+  `#!/usr/bin/env bash` and `set -euo pipefail`, use `exec` for leaf commands so
+  signals propagate cleanly, forward `"$@"` when arguments are supported, and
+  validate changes with `shellcheck` (managed in `.mise.toml`). Standalone
+  Python or other interpreter scripts can live directly in `mise-tasks/` with
+  their own shebang and `#MISE` headers.
+- **Composite tasks (`.mise.toml`)**: Reserve `[tasks.*]` definitions in
+  `.mise.toml` for tasks-of-tasks that orchestrate other tasks via `depends`,
+  sequential `run = [{ task = "..." }]`, or parallel
+  `run = [{ tasks = [...] }]`.
 
 Use `mise run test` (which invokes `test:packages` and depends on `pg:up`) for
 the full Go test suite against local `postgres:16-alpine` (`micup-postgres` on

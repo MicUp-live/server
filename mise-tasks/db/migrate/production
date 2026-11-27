@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Apply embedded PostgreSQL/Aurora DSQL schema migrations to production"
+#MISE depends=["tofu:init"]
+set -euo pipefail
+
+ENDPOINT=$(tofu -chdir=infra output -raw dsql_endpoint)
+exec env -u DATABASE_URL   APP_ENV=production   STORE_BACKEND=postgres   POSTGRES_DSQL_MODE=true   DSQL_ENDPOINT="${ENDPOINT}"   DSQL_USER="${DSQL_USER:-admin}"   AWS_REGION="${AWS_REGION:-us-east-2}"   go run ./cmd/pg-migrate "$@"

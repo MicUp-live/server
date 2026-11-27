@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Invoke the catalog GC Lambda with a scheduled EventBridge event"
+#MISE depends=["local:bootstrap", "build:lambda-local"]
+set -euo pipefail
+
+exec env AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local   sam local invoke CatalogGC   --template-file local/sam-template.yaml   --docker-network micup-local   --env-vars local/sam-env.json   --region us-east-2   --event local/events/catalog-gc.json "$@"

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Provision the local PostgreSQL schema and LocalStack resources"
+#MISE depends=["local:services"]
+set -euo pipefail
+
+exec go run ./cmd/local-bootstrap "$@"

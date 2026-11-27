@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Scan and reconcile undispatched import jobs"
+set -euo pipefail
+
+exec go run ./cmd/import-reconciler "$@"

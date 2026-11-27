@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+#MISE description="Build x86_64 Lambda entrypoints for this workstation's SAM runtime"
+set -euo pipefail
+
+mkdir -p dist/local/api dist/local/catalog-worker dist/local/import-worker dist/local/compaction-dispatcher dist/local/catalog-gc dist/local/import-reconciler
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/api/bootstrap main.go
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/catalog-worker/bootstrap ./cmd/catalog-worker
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/import-worker/bootstrap ./cmd/import-worker
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/compaction-dispatcher/bootstrap ./cmd/compaction-dispatcher
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/catalog-gc/bootstrap ./cmd/catalog-gc
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/import-reconciler/bootstrap ./cmd/import-reconciler

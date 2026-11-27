@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Build ARM64 catalog compaction dispatcher Lambda package"
+set -euo pipefail
+
+mkdir -p dist/compaction-dispatcher
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/compaction-dispatcher/bootstrap ./cmd/compaction-dispatcher
+(cd dist/compaction-dispatcher && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../compaction-dispatcher.zip bootstrap)

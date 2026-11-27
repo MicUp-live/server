@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+#MISE description="Sync compiled reference dictionary and archived PDF/CSV sources to S3 and invalidate CloudFront cache"
+#MISE depends=["tofu:init"]
+set -euo pipefail
+
+BUCKET=$(tofu -chdir=infra output -raw s3_bucket_name 2>/dev/null || echo "micup-app-production-936ec344")
+DIST_ID=$(tofu -chdir=infra output -raw cloudfront_distribution_id 2>/dev/null || echo "E1OYLRRPB0TCML")
+aws s3 sync ./web/public/reference/v1/ "s3://${BUCKET}/reference/v1/" --exclude "sources/*" --content-type application/json --content-encoding gzip
+if [ -d ./dist/reference/v1/sources ]; then
+  aws s3 sync ./dist/reference/v1/sources/ "s3://${BUCKET}/reference/v1/sources/"
+fi
+aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/reference/*"

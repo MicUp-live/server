@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Follow logs from the local PostgreSQL and LocalStack services"
+set -euo pipefail
+
+exec docker compose logs --follow postgres localstack "$@"

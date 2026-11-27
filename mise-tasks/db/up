@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Start local PostgreSQL 16"
+#MISE alias="pg:up"
+set -euo pipefail
+
+exec docker compose up -d --wait postgres

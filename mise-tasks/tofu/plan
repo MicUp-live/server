@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Show OpenTofu execution plan"
+#MISE depends=["tofu:init"]
+set -euo pipefail
+
+exec tofu -chdir=infra plan "$@"

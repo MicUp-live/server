@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Build ARM64 Assistant Import worker and package into dist/import-worker.zip"
+set -euo pipefail
+
+mkdir -p dist/import-worker
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/import-worker/bootstrap ./cmd/import-worker
+(cd dist/import-worker && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../import-worker.zip bootstrap)

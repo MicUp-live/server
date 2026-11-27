@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Print the SemVer version implied by conventional commits"
+set -euo pipefail
+
+exec convco --config .versionrc version --bump "$@"

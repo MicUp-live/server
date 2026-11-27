@@ -92,6 +92,21 @@ resource "aws_s3_bucket_policy" "allow_cloudfront" {
             "AWS:SourceArn" = aws_cloudfront_distribution.site.arn
           }
         }
+      },
+      {
+        Sid       = "DenyInsecureTransport"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "s3:*"
+        Resource = [
+          aws_s3_bucket.app.arn,
+          "${aws_s3_bucket.app.arn}/*"
+        ]
+        Condition = {
+          Bool = {
+            "aws:SecureTransport" = "false"
+          }
+        }
       }
     ]
   })

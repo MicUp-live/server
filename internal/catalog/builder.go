@@ -71,38 +71,12 @@ func (b Builder) handleExistingVersion(ctx context.Context, songbookID string, c
 	switch existing.Status {
 	case models.CatalogVersionReady:
 		return b.publishReadyVersion(ctx, songbookID, existing, compiled, opts...)
-
-	case models.CatalogVersionFailed:
-		reclaimed, err := b.Catalogs.ReclaimCatalogVersion(ctx, compiled.CatalogID, leaseDuration)
-		if err == nil {
-			return b.uploadAndPublish(ctx, songbookID, compiled, reclaimed.LeaseToken, opts...)
-		}
-		if !errors.Is(err, store.ErrReclaimConflict) {
-			return nil, err
-		}
-
-	case models.CatalogVersionBuilding:
-		if b.isAbandoned(existing, leaseDuration) {
-			reclaimed, err := b.Catalogs.ReclaimCatalogVersion(ctx, compiled.CatalogID, leaseDuration)
-			if err == nil {
-				return b.uploadAndPublish(ctx, songbookID, compiled, reclaimed.LeaseToken, opts...)
-			}
-			if !errors.Is(err, store.ErrReclaimConflict) {
-				return nil, err
+	case models.CatalogVersionFailed, models.CatalogVersionBuilding, models.CatalogVersionDeleting:
+		if b.isReclaimable(existing, leaseDuration) {
+			if ver, handled, reclaimErr := b.tryReclaimAndPublish(ctx, songbookID, compiled, leaseDuration, opts...); handled {
+				return ver, reclaimErr
 			}
 		}
-
-	case models.CatalogVersionDeleting:
-		if b.isAbandoned(existing, leaseDuration) {
-			reclaimed, err := b.Catalogs.ReclaimCatalogVersion(ctx, compiled.CatalogID, leaseDuration)
-			if err == nil {
-				return b.uploadAndPublish(ctx, songbookID, compiled, reclaimed.LeaseToken, opts...)
-			}
-			if !errors.Is(err, store.ErrReclaimConflict) {
-				return nil, err
-			}
-		}
-
 	default:
 		return nil, fmt.Errorf("build catalog: existing version %s is %s", existing.ID, existing.Status)
 	}
@@ -116,10 +90,31 @@ func (b Builder) handleExistingVersion(ctx context.Context, songbookID string, c
 		return b.publishReadyVersion(ctx, songbookID, current, compiled, opts...)
 	}
 
-	if existing.Status == models.CatalogVersionBuilding {
-		return nil, fmt.Errorf("%w: %s", ErrBuildInProgress, compiled.CatalogID)
+	return nil, existingVersionError(compiled.CatalogID, existing.Status)
+}
+
+func (b Builder) isReclaimable(version *models.CatalogVersion, leaseDuration time.Duration) bool {
+	return version.Status == models.CatalogVersionFailed ||
+		((version.Status == models.CatalogVersionBuilding || version.Status == models.CatalogVersionDeleting) && b.isAbandoned(version, leaseDuration))
+}
+
+func (b Builder) tryReclaimAndPublish(ctx context.Context, songbookID string, compiled *Compilation, leaseDuration time.Duration, opts ...store.PublicationOptions) (*models.CatalogVersion, bool, error) {
+	reclaimed, err := b.Catalogs.ReclaimCatalogVersion(ctx, compiled.CatalogID, leaseDuration)
+	if err == nil {
+		ver, pubErr := b.uploadAndPublish(ctx, songbookID, compiled, reclaimed.LeaseToken, opts...)
+		return ver, true, pubErr
 	}
-	return nil, fmt.Errorf("build catalog: existing version %s is %s", compiled.CatalogID, existing.Status)
+	if !errors.Is(err, store.ErrReclaimConflict) {
+		return nil, true, err
+	}
+	return nil, false, nil
+}
+
+func existingVersionError(catalogID string, status models.CatalogVersionStatus) error {
+	if status == models.CatalogVersionBuilding {
+		return fmt.Errorf("%w: %s", ErrBuildInProgress, catalogID)
+	}
+	return fmt.Errorf("build catalog: existing version %s is %s", catalogID, status)
 }
 
 func (b Builder) isAbandoned(version *models.CatalogVersion, leaseDuration time.Duration) bool {
@@ -151,89 +146,65 @@ func (b Builder) waitForReadyOrReclaim(ctx context.Context, songbookID string, c
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case <-deadlineTimer.C:
-			current, err := b.Catalogs.GetCatalogVersion(ctx, compiled.CatalogID)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					version := &models.CatalogVersion{
-						ID:             compiled.CatalogID,
-						SchemaVersion:  b.Options.SchemaVersion,
-						LeaseExpiresAt: time.Now().UTC().Add(leaseDuration),
-					}
-					if createErr := b.Catalogs.CreateCatalogVersion(ctx, version); createErr == nil {
-						return b.uploadAndPublish(ctx, songbookID, compiled, version.LeaseToken, opts...)
-					}
-				}
-				return nil, err
-			}
-			if current.Status == models.CatalogVersionReady {
-				return b.publishReadyVersion(ctx, songbookID, current, compiled, opts...)
-			}
-			if current.Status == models.CatalogVersionBuilding {
-				return nil, fmt.Errorf("%w: %s", ErrBuildInProgress, compiled.CatalogID)
-			}
-			return nil, fmt.Errorf("build catalog: existing version %s is %s", compiled.CatalogID, current.Status)
+			return b.handleDeadline(ctx, songbookID, compiled, leaseDuration, opts...)
 		case <-ticker.C:
-			current, err := b.Catalogs.GetCatalogVersion(ctx, compiled.CatalogID)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					version := &models.CatalogVersion{
-						ID:             compiled.CatalogID,
-						SchemaVersion:  b.Options.SchemaVersion,
-						LeaseExpiresAt: time.Now().UTC().Add(leaseDuration),
-					}
-					if createErr := b.Catalogs.CreateCatalogVersion(ctx, version); createErr == nil {
-						return b.uploadAndPublish(ctx, songbookID, compiled, version.LeaseToken, opts...)
-					}
-				}
-				return nil, err
-			}
-			switch current.Status {
-			case models.CatalogVersionReady:
-				return b.publishReadyVersion(ctx, songbookID, current, compiled, opts...)
-
-			case models.CatalogVersionFailed:
-				reclaimed, err := b.Catalogs.ReclaimCatalogVersion(ctx, compiled.CatalogID, leaseDuration)
-				if err == nil {
-					return b.uploadAndPublish(ctx, songbookID, compiled, reclaimed.LeaseToken, opts...)
-				}
-				if !errors.Is(err, store.ErrReclaimConflict) {
-					return nil, err
-				}
-
-			case models.CatalogVersionBuilding:
-				if b.isAbandoned(current, leaseDuration) {
-					reclaimed, err := b.Catalogs.ReclaimCatalogVersion(ctx, compiled.CatalogID, leaseDuration)
-					if err == nil {
-						return b.uploadAndPublish(ctx, songbookID, compiled, reclaimed.LeaseToken, opts...)
-					}
-					if !errors.Is(err, store.ErrReclaimConflict) {
-						return nil, err
-					}
-				}
-
-			case models.CatalogVersionDeleting:
-				if b.isAbandoned(current, leaseDuration) {
-					reclaimed, err := b.Catalogs.ReclaimCatalogVersion(ctx, compiled.CatalogID, leaseDuration)
-					if err == nil {
-						return b.uploadAndPublish(ctx, songbookID, compiled, reclaimed.LeaseToken, opts...)
-					}
-					if !errors.Is(err, store.ErrReclaimConflict) {
-						return nil, err
-					}
-				}
-
-			default:
-				return nil, fmt.Errorf("build catalog: unexpected status %s for version %s", current.Status, current.ID)
-			}
-
-			if time.Now().After(deadline) {
-				if current.Status == models.CatalogVersionBuilding {
-					return nil, fmt.Errorf("%w: %s", ErrBuildInProgress, current.ID)
-				}
-				return nil, fmt.Errorf("build catalog: existing version %s is %s", current.ID, current.Status)
+			if ver, done, err := b.handlePollTick(ctx, songbookID, compiled, leaseDuration, deadline, opts...); done {
+				return ver, err
 			}
 		}
 	}
+}
+
+func (b Builder) createMissingVersion(ctx context.Context, songbookID string, compiled *Compilation, leaseDuration time.Duration, getErr error, opts ...store.PublicationOptions) (*models.CatalogVersion, error) {
+	if errors.Is(getErr, os.ErrNotExist) {
+		version := &models.CatalogVersion{
+			ID:             compiled.CatalogID,
+			SchemaVersion:  b.Options.SchemaVersion,
+			LeaseExpiresAt: time.Now().UTC().Add(leaseDuration),
+		}
+		if createErr := b.Catalogs.CreateCatalogVersion(ctx, version); createErr == nil {
+			return b.uploadAndPublish(ctx, songbookID, compiled, version.LeaseToken, opts...)
+		}
+	}
+	return nil, getErr
+}
+
+func (b Builder) handleDeadline(ctx context.Context, songbookID string, compiled *Compilation, leaseDuration time.Duration, opts ...store.PublicationOptions) (*models.CatalogVersion, error) {
+	current, err := b.Catalogs.GetCatalogVersion(ctx, compiled.CatalogID)
+	if err != nil {
+		return b.createMissingVersion(ctx, songbookID, compiled, leaseDuration, err, opts...)
+	}
+	if current.Status == models.CatalogVersionReady {
+		return b.publishReadyVersion(ctx, songbookID, current, compiled, opts...)
+	}
+	return nil, existingVersionError(compiled.CatalogID, current.Status)
+}
+
+func (b Builder) handlePollTick(ctx context.Context, songbookID string, compiled *Compilation, leaseDuration time.Duration, deadline time.Time, opts ...store.PublicationOptions) (*models.CatalogVersion, bool, error) {
+	current, err := b.Catalogs.GetCatalogVersion(ctx, compiled.CatalogID)
+	if err != nil {
+		ver, createErr := b.createMissingVersion(ctx, songbookID, compiled, leaseDuration, err, opts...)
+		return ver, true, createErr
+	}
+
+	switch current.Status {
+	case models.CatalogVersionReady:
+		ver, pubErr := b.publishReadyVersion(ctx, songbookID, current, compiled, opts...)
+		return ver, true, pubErr
+	case models.CatalogVersionFailed, models.CatalogVersionBuilding, models.CatalogVersionDeleting:
+		if b.isReclaimable(current, leaseDuration) {
+			if ver, handled, reclaimErr := b.tryReclaimAndPublish(ctx, songbookID, compiled, leaseDuration, opts...); handled {
+				return ver, true, reclaimErr
+			}
+		}
+	default:
+		return nil, true, fmt.Errorf("build catalog: unexpected status %s for version %s", current.Status, current.ID)
+	}
+
+	if time.Now().After(deadline) {
+		return nil, true, existingVersionError(current.ID, current.Status)
+	}
+	return nil, false, nil
 }
 
 func (b Builder) putPrivateLocations(ctx context.Context, songbookID string, compiled *Compilation) error {

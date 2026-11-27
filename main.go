@@ -15,7 +15,6 @@ import (
 	"micup.live/server/internal/config"
 	"micup.live/server/internal/email"
 	"micup.live/server/internal/importjob"
-	"micup.live/server/internal/models"
 	"micup.live/server/internal/reference"
 	"micup.live/server/internal/store"
 	"micup.live/server/internal/store/backend"
@@ -56,94 +55,112 @@ func loadStore(cfg config.Config) (app.Dependencies, func(), error) {
 		return app.Dependencies{}, func() {}, err
 	}
 
-	var emailSender email.Sender = email.NewLogSender()
-	var catalogJobs catalog.JobQueue
-	var catalogReader interface {
-		ListSongs(context.Context, string, string) ([]*models.Song, error)
-	}
-	var importJobs store.ImportJobStore
-	var importQueue interface {
-		Enqueue(context.Context, importjob.Job) error
-	}
-	var manifestWriter interface {
-		Put(context.Context, string, []byte) error
-		Presign(context.Context, string, int64) (string, error)
-		DeleteKey(context.Context, string) error
-		DeletePrefix(context.Context, string) error
-	}
 	referenceStore := &reference.HybridStore{
 		LocalPublicDir: "./web/public",
 		LocalDistDir:   "./dist",
 	}
-	needsAWS := cfg.CatalogBucket != "" || cfg.EmailTransport == "ses" || cfg.CatalogBuildQueueURL != "" || cfg.ImportJobQueueURL != ""
-	var (
-		s3Client  *s3.Client
-		sqsClient *sqs.Client
-	)
-	if needsAWS {
-		awsCfg, awsErr := awsclient.Load(context.Background(), awsclient.Config{
-			Region:      cfg.AWSRegion,
-			S3Endpoint:  cfg.S3Endpoint,
-			SQSEndpoint: cfg.SQSEndpoint,
-			SESEndpoint: cfg.SESEndpoint,
-		})
-		if awsErr != nil {
-			if cfg.CatalogBuildQueueURL != "" || (cfg.ImportJobQueueURL != "" && cfg.CatalogBucket != "") {
-				return app.Dependencies{}, func() {}, awsErr
-			}
-			if cfg.EmailTransport == "ses" {
-				log.Printf("[EMAIL WARN] Failed to load AWS config for SES, falling back to LogSender: %v", awsErr)
-			}
-		} else {
-			if cfg.CatalogBucket != "" {
-				s3Client = awsclient.NewS3(awsCfg, cfg.S3Endpoint)
-				referenceStore.Bucket = cfg.CatalogBucket
-				referenceStore.Client = s3Client
-				referenceStore.Presigner = s3.NewPresignClient(s3Client)
-			}
-			if cfg.EmailTransport == "ses" {
-				sesClient := awsclient.NewSES(awsCfg, cfg.SESEndpoint)
-				emailSender = email.NewSESSender(sesClient, "MicUp.live <noreply@micup.live>")
-				log.Printf("[EMAIL] Configured AWS SESv2 sender for region %s", cfg.AWSRegion)
-			}
-			if cfg.CatalogBuildQueueURL != "" || (cfg.ImportJobQueueURL != "" && cfg.CatalogBucket != "") {
-				sqsClient = awsclient.NewSQS(awsCfg, cfg.SQSEndpoint)
-			}
-		}
-	}
-	if cfg.CatalogBuildQueueURL != "" {
-		catalogJobs, err = catalog.NewSQSJobQueue(cfg.CatalogBuildQueueURL, sqsClient)
-		if err != nil {
-			return app.Dependencies{}, func() {}, err
-		}
-		if cfg.CatalogBucket != "" && s3Client != nil {
-			catalogReader = &catalog.S3CatalogReader{Bucket: cfg.CatalogBucket, Client: s3Client}
-		}
-	}
-	if cfg.ImportJobQueueURL != "" && cfg.CatalogBucket != "" {
-		importQueue = &importjob.Queue{URL: cfg.ImportJobQueueURL, Client: sqsClient}
-		manifestWriter = &importjob.ManifestWriter{Bucket: cfg.CatalogBucket, Client: s3Client, Presigner: s3.NewPresignClient(s3Client)}
-		importJobs = s
+	s3Client, sqsClient, emailSender, err := configureAWS(cfg, referenceStore)
+	if err != nil {
+		return app.Dependencies{}, func() {}, err
 	}
 
-	return app.Dependencies{
+	deps := app.Dependencies{
 		Auth:           s,
 		Favorites:      s,
 		Passkeys:       s,
 		Songbooks:      s,
 		Requests:       s,
 		Events:         s,
-		CatalogJobs:    catalogJobs,
-		CatalogReader:  catalogReader,
 		CatalogChanges: s,
 		Catalogs:       s,
-		ImportJobs:     importJobs,
-		ImportQueue:    importQueue,
-		ManifestWriter: manifestWriter,
 		ReferenceStore: referenceStore,
 		DeveloperKeys:  s,
 		RateLimits:     s,
 		SongbookAccess: s,
 		EmailSender:    emailSender,
-	}, func() { _ = s.Close() }, nil
+	}
+	if err := configureCatalog(&deps, cfg, s3Client, sqsClient); err != nil {
+		return app.Dependencies{}, func() {}, err
+	}
+	configureImport(&deps, cfg, s, s3Client, sqsClient)
+
+	return deps, func() { _ = s.Close() }, nil
+}
+
+func needsAWS(cfg config.Config) bool {
+	return cfg.CatalogBucket != "" || cfg.EmailTransport == "ses" || cfg.CatalogBuildQueueURL != "" || cfg.ImportJobQueueURL != ""
+}
+
+func requiresSQS(cfg config.Config) bool {
+	return cfg.CatalogBuildQueueURL != "" || (cfg.ImportJobQueueURL != "" && cfg.CatalogBucket != "")
+}
+
+func configureAWS(cfg config.Config, referenceStore *reference.HybridStore) (*s3.Client, *sqs.Client, email.Sender, error) {
+	emailSender := email.Sender(email.NewLogSender())
+	if !needsAWS(cfg) {
+		return nil, nil, emailSender, nil
+	}
+
+	awsCfg, awsErr := awsclient.Load(context.Background(), awsclient.Config{
+		Region:      cfg.AWSRegion,
+		S3Endpoint:  cfg.S3Endpoint,
+		SQSEndpoint: cfg.SQSEndpoint,
+		SESEndpoint: cfg.SESEndpoint,
+	})
+	needsSQS := requiresSQS(cfg)
+	if awsErr != nil {
+		if needsSQS {
+			return nil, nil, nil, awsErr
+		}
+		if cfg.EmailTransport == "ses" {
+			log.Printf("[EMAIL WARN] Failed to load AWS config for SES, falling back to LogSender: %v", awsErr)
+		}
+		return nil, nil, emailSender, nil
+	}
+
+	var s3Client *s3.Client
+	if cfg.CatalogBucket != "" {
+		s3Client = awsclient.NewS3(awsCfg, cfg.S3Endpoint)
+		referenceStore.Bucket = cfg.CatalogBucket
+		referenceStore.Client = s3Client
+		referenceStore.Presigner = s3.NewPresignClient(s3Client)
+	}
+	if cfg.EmailTransport == "ses" {
+		sesClient := awsclient.NewSES(awsCfg, cfg.SESEndpoint)
+		emailSender = email.NewSESSender(sesClient, "MicUp.live <noreply@micup.live>")
+		log.Printf("[EMAIL] Configured AWS SESv2 sender for region %s", cfg.AWSRegion)
+	}
+	var sqsClient *sqs.Client
+	if needsSQS {
+		sqsClient = awsclient.NewSQS(awsCfg, cfg.SQSEndpoint)
+	}
+	return s3Client, sqsClient, emailSender, nil
+}
+
+func configureCatalog(deps *app.Dependencies, cfg config.Config, s3Client *s3.Client, sqsClient *sqs.Client) error {
+	if cfg.CatalogBuildQueueURL == "" {
+		return nil
+	}
+	catalogJobs, err := catalog.NewSQSJobQueue(cfg.CatalogBuildQueueURL, sqsClient)
+	if err != nil {
+		return err
+	}
+	deps.CatalogJobs = catalogJobs
+	if cfg.CatalogBucket != "" && s3Client != nil {
+		deps.CatalogReader = &catalog.S3CatalogReader{Bucket: cfg.CatalogBucket, Client: s3Client}
+	}
+	return nil
+}
+
+func configureImport(deps *app.Dependencies, cfg config.Config, importJobs store.ImportJobStore, s3Client *s3.Client, sqsClient *sqs.Client) {
+	if cfg.ImportJobQueueURL == "" || cfg.CatalogBucket == "" {
+		return
+	}
+	deps.ImportQueue = &importjob.Queue{URL: cfg.ImportJobQueueURL, Client: sqsClient}
+	deps.ManifestWriter = &importjob.ManifestWriter{
+		Bucket:    cfg.CatalogBucket,
+		Client:    s3Client,
+		Presigner: s3.NewPresignClient(s3Client),
+	}
+	deps.ImportJobs = importJobs
 }

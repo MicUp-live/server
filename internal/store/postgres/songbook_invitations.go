@@ -125,87 +125,112 @@ func (s *Store) CreateSongbookInvitation(ctx context.Context, inv *models.Songbo
 	cleanReplace := cleanReplaceInvitationIDs(inv.ID, replaceIDs)
 
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
-		var ownerID string
-		var deleting bool
-		if err := tx.QueryRow(ctx, `SELECT owner_id, deleting FROM songbooks WHERE id = $1 FOR UPDATE`, inv.SongbookID).Scan(&ownerID, &deleting); err != nil {
-			if isNotFound(err) {
-				return store.ErrInvitationConflict
-			}
-			return fmt.Errorf("check songbook for invitation: %w", err)
+		if err := lockSongbookForInvitationTx(ctx, tx, inv.SongbookID, inv.OwnerID); err != nil {
+			return err
 		}
-		if deleting {
-			return store.ErrSongbookDeleting
+		if err := ensureNoCollaboratorGrantTx(ctx, tx, inv.SongbookID, inv.RecipientEmail, "check existing collaborator grant"); err != nil {
+			return err
 		}
-		if ownerID != inv.OwnerID {
-			return store.ErrInvitationConflict
+		if err := replacePendingInvitationsTx(ctx, tx, inv, cleanReplace, now); err != nil {
+			return err
 		}
-
-		if isCollab, err := hasExistingCollaboratorGrantTx(ctx, tx, inv.SongbookID, inv.RecipientEmail); err != nil {
-			return fmt.Errorf("check existing collaborator grant: %w", err)
-		} else if isCollab {
-			return store.ErrAlreadyCollaborator
+		if err := insertSongbookInvitationTx(ctx, tx, inv, created, now); err != nil {
+			return err
 		}
-
-		for _, oldID := range cleanReplace {
-			tag, err := tx.Exec(ctx, `
-				UPDATE songbook_invitations
-				SET status = $1, token_hash = $2, updated_at = $3
-				WHERE id = $4 AND songbook_id = $5 AND status = $6`,
-				string(models.InvitationStatusReplaced), revokedTokenPrefix+oldID, now,
-				oldID, inv.SongbookID, string(models.InvitationStatusPending),
-			)
-			if err != nil {
-				return fmt.Errorf("replace pending invitation: %w", err)
-			}
-			if tag.RowsAffected() == 0 {
-				if collabNow, cErr := hasExistingCollaboratorGrantTx(ctx, tx, inv.SongbookID, inv.RecipientEmail); cErr == nil && collabNow {
-					return store.ErrAlreadyCollaborator
-				}
-				return store.ErrInvitationConflict
-			}
-		}
-
-		_, err := tx.Exec(ctx, `
-			INSERT INTO songbook_invitations (
-				id, songbook_id, owner_id, recipient_email, can_edit_catalog, can_host_shows,
-				token_hash, status, expires_at, send_error, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '', $10, $11)`,
-			inv.ID, inv.SongbookID, inv.OwnerID, inv.RecipientEmail, inv.CanEditCatalog, inv.CanHostShows,
-			inv.TokenHash, string(inv.Status), inv.ExpiresAt.UTC(), created, now,
-		)
-		if err != nil {
-			if isUniqueViolation(err) {
-				return store.ErrInvitationConflict
-			}
-			if isForeignKeyViolation(err) {
-				return errInviteFKViolation
-			}
-			return fmt.Errorf("create songbook invitation: %w", err)
-		}
-
 		// Re-check collaborator grant after insert in case an accept committed
 		// concurrently while this insert waited on a pending invitation lock.
-		if collabNow, err := hasExistingCollaboratorGrantTx(ctx, tx, inv.SongbookID, inv.RecipientEmail); err != nil {
-			return fmt.Errorf("verify collaborator absence: %w", err)
-		} else if collabNow {
-			return store.ErrAlreadyCollaborator
-		}
-		return nil
+		return ensureNoCollaboratorGrantTx(ctx, tx, inv.SongbookID, inv.RecipientEmail, "verify collaborator absence")
 	})
 	if errors.Is(err, errInviteFKViolation) {
-		var sbDeleting bool
-		if sbErr := s.pool.QueryRow(ctx, `SELECT deleting FROM songbooks WHERE id = $1`, inv.SongbookID).Scan(&sbDeleting); sbErr != nil {
-			if isNotFound(sbErr) {
-				return os.ErrNotExist
-			}
-			return fmt.Errorf("check songbook after invitation foreign key violation: %w", sbErr)
-		}
-		if sbDeleting {
-			return store.ErrSongbookDeleting
-		}
-		return store.ErrInvitationConflict
+		return s.resolveInvitationFKViolation(ctx, inv.SongbookID)
 	}
 	return err
+}
+
+func lockSongbookForInvitationTx(ctx context.Context, tx pgx.Tx, songbookID, expectedOwnerID string) error {
+	var ownerID string
+	var deleting bool
+	if err := tx.QueryRow(ctx, `SELECT owner_id, deleting FROM songbooks WHERE id = $1 FOR UPDATE`, songbookID).Scan(&ownerID, &deleting); err != nil {
+		if isNotFound(err) {
+			return store.ErrInvitationConflict
+		}
+		return fmt.Errorf("check songbook for invitation: %w", err)
+	}
+	if deleting {
+		return store.ErrSongbookDeleting
+	}
+	if ownerID != expectedOwnerID {
+		return store.ErrInvitationConflict
+	}
+	return nil
+}
+
+func ensureNoCollaboratorGrantTx(ctx context.Context, tx pgx.Tx, songbookID, recipientEmail, errContext string) error {
+	isCollab, err := hasExistingCollaboratorGrantTx(ctx, tx, songbookID, recipientEmail)
+	if err != nil {
+		return fmt.Errorf("%s: %w", errContext, err)
+	}
+	if isCollab {
+		return store.ErrAlreadyCollaborator
+	}
+	return nil
+}
+
+func replacePendingInvitationsTx(ctx context.Context, tx pgx.Tx, inv *models.SongbookInvitation, replaceIDs []string, now time.Time) error {
+	for _, oldID := range replaceIDs {
+		tag, err := tx.Exec(ctx, `
+			UPDATE songbook_invitations
+			SET status = $1, token_hash = $2, updated_at = $3
+			WHERE id = $4 AND songbook_id = $5 AND status = $6`,
+			string(models.InvitationStatusReplaced), revokedTokenPrefix+oldID, now,
+			oldID, inv.SongbookID, string(models.InvitationStatusPending),
+		)
+		if err != nil {
+			return fmt.Errorf("replace pending invitation: %w", err)
+		}
+		if tag.RowsAffected() == 0 {
+			if collabNow, cErr := hasExistingCollaboratorGrantTx(ctx, tx, inv.SongbookID, inv.RecipientEmail); cErr == nil && collabNow {
+				return store.ErrAlreadyCollaborator
+			}
+			return store.ErrInvitationConflict
+		}
+	}
+	return nil
+}
+
+func insertSongbookInvitationTx(ctx context.Context, tx pgx.Tx, inv *models.SongbookInvitation, created, now time.Time) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO songbook_invitations (
+			id, songbook_id, owner_id, recipient_email, can_edit_catalog, can_host_shows,
+			token_hash, status, expires_at, send_error, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, '', $10, $11)`,
+		inv.ID, inv.SongbookID, inv.OwnerID, inv.RecipientEmail, inv.CanEditCatalog, inv.CanHostShows,
+		inv.TokenHash, string(inv.Status), inv.ExpiresAt.UTC(), created, now,
+	)
+	if err == nil {
+		return nil
+	}
+	if isUniqueViolation(err) {
+		return store.ErrInvitationConflict
+	}
+	if isForeignKeyViolation(err) {
+		return errInviteFKViolation
+	}
+	return fmt.Errorf("create songbook invitation: %w", err)
+}
+
+func (s *Store) resolveInvitationFKViolation(ctx context.Context, songbookID string) error {
+	var sbDeleting bool
+	if sbErr := s.pool.QueryRow(ctx, `SELECT deleting FROM songbooks WHERE id = $1`, songbookID).Scan(&sbDeleting); sbErr != nil {
+		if isNotFound(sbErr) {
+			return os.ErrNotExist
+		}
+		return fmt.Errorf("check songbook after invitation foreign key violation: %w", sbErr)
+	}
+	if sbDeleting {
+		return store.ErrSongbookDeleting
+	}
+	return store.ErrInvitationConflict
 }
 
 // GetSongbookInvitation loads an invitation by ID.
@@ -413,55 +438,18 @@ func (s *Store) AcceptSongbookInvitation(ctx context.Context, tokenHash, userID,
 	var outInv *models.SongbookInvitation
 
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
-		row := tx.QueryRow(ctx, `SELECT `+invitationColumns+` FROM songbook_invitations WHERE token_hash = $1 FOR UPDATE`, tokenHash)
-		inv, err := scanSongbookInvitation(row)
+		inv, err := loadPendingInvitationForAcceptTx(ctx, tx, tokenHash, normEmail, now)
 		if err != nil {
-			if isNotFound(err) {
-				return store.ErrInvitationNotFound
-			}
-			return fmt.Errorf("load invitation for acceptance: %w", err)
-		}
-		if inv.Status != models.InvitationStatusPending || inv.TokenHash != tokenHash {
-			return store.ErrInvitationInvalid
-		}
-		if !inv.ExpiresAt.After(now) {
-			return store.ErrInvitationExpired
-		}
-		if normalizeInviteEmail(inv.RecipientEmail) != normEmail {
-			return store.ErrInvitationEmailMismatch
+			return err
 		}
 		if err := verifyAcceptTargetsTx(ctx, tx, inv, userID, normEmail); err != nil {
 			return err
 		}
-
-		_, err = tx.Exec(ctx, `
-			INSERT INTO songbook_grants (
-				songbook_id, user_id, can_edit_catalog, can_host_shows, granted_by, created_at, updated_at
-			) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-			inv.SongbookID, userID, inv.CanEditCatalog, inv.CanHostShows, nullString(inv.OwnerID), now, now,
-		)
-		if err != nil {
-			if isUniqueViolation(err) {
-				return store.ErrAlreadyCollaborator
-			}
-			if isForeignKeyViolation(err) {
-				return store.ErrSongbookDeleting
-			}
-			return fmt.Errorf("insert songbook grant: %w", err)
+		if err := insertSongbookGrantForAcceptTx(ctx, tx, inv, userID, now); err != nil {
+			return err
 		}
-
-		tag, err := tx.Exec(ctx, `
-			UPDATE songbook_invitations
-			SET status = $1, token_hash = $2, accepted_by_user_id = $3, accepted_at = $4, updated_at = $5
-			WHERE id = $6 AND status = $7 AND token_hash = $8 AND expires_at > $9`,
-			string(models.InvitationStatusAccepted), revokedTokenPrefix+inv.ID,
-			userID, now, now, inv.ID, string(models.InvitationStatusPending), tokenHash, now,
-		)
-		if err != nil {
-			return fmt.Errorf("accept songbook invitation: %w", err)
-		}
-		if tag.RowsAffected() == 0 {
-			return store.ErrInvitationInvalid
+		if err := markInvitationAcceptedTx(ctx, tx, inv, tokenHash, userID, now); err != nil {
+			return err
 		}
 
 		acceptedAt := now
@@ -483,6 +471,63 @@ func (s *Store) AcceptSongbookInvitation(ctx context.Context, tokenHash, userID,
 		return nil, nil, err
 	}
 	return outGrant, outInv, nil
+}
+
+func loadPendingInvitationForAcceptTx(ctx context.Context, tx pgx.Tx, tokenHash, normEmail string, now time.Time) (*models.SongbookInvitation, error) {
+	row := tx.QueryRow(ctx, `SELECT `+invitationColumns+` FROM songbook_invitations WHERE token_hash = $1 FOR UPDATE`, tokenHash)
+	inv, err := scanSongbookInvitation(row)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, store.ErrInvitationNotFound
+		}
+		return nil, fmt.Errorf("load invitation for acceptance: %w", err)
+	}
+	if inv.Status != models.InvitationStatusPending || inv.TokenHash != tokenHash {
+		return nil, store.ErrInvitationInvalid
+	}
+	if !inv.ExpiresAt.After(now) {
+		return nil, store.ErrInvitationExpired
+	}
+	if normalizeInviteEmail(inv.RecipientEmail) != normEmail {
+		return nil, store.ErrInvitationEmailMismatch
+	}
+	return inv, nil
+}
+
+func insertSongbookGrantForAcceptTx(ctx context.Context, tx pgx.Tx, inv *models.SongbookInvitation, userID string, now time.Time) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO songbook_grants (
+			songbook_id, user_id, can_edit_catalog, can_host_shows, granted_by, created_at, updated_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		inv.SongbookID, userID, inv.CanEditCatalog, inv.CanHostShows, nullString(inv.OwnerID), now, now,
+	)
+	if err == nil {
+		return nil
+	}
+	if isUniqueViolation(err) {
+		return store.ErrAlreadyCollaborator
+	}
+	if isForeignKeyViolation(err) {
+		return store.ErrSongbookDeleting
+	}
+	return fmt.Errorf("insert songbook grant: %w", err)
+}
+
+func markInvitationAcceptedTx(ctx context.Context, tx pgx.Tx, inv *models.SongbookInvitation, tokenHash, userID string, now time.Time) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE songbook_invitations
+		SET status = $1, token_hash = $2, accepted_by_user_id = $3, accepted_at = $4, updated_at = $5
+		WHERE id = $6 AND status = $7 AND token_hash = $8 AND expires_at > $9`,
+		string(models.InvitationStatusAccepted), revokedTokenPrefix+inv.ID,
+		userID, now, now, inv.ID, string(models.InvitationStatusPending), tokenHash, now,
+	)
+	if err != nil {
+		return fmt.Errorf("accept songbook invitation: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrInvitationInvalid
+	}
+	return nil
 }
 
 // DeleteSongbookInvitation removes an invitation record during songbook cleanup.

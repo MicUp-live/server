@@ -66,18 +66,23 @@ func populateFavorites(ctx context.Context, export *UserDataExport, user *models
 	if len(user.FavoriteArtists) > 0 {
 		export.FavoriteArtists = user.FavoriteArtists
 	}
-	if len(export.FavoriteSongs) == 0 && len(export.FavoriteArtists) == 0 && auth != nil {
-		if fs, ok := auth.(store.FavoritesStore); ok && fs != nil {
-			if favs, err := fs.GetUserFavorites(ctx, user.ID); err == nil && favs != nil {
-				if len(favs.Songs) > 0 {
-					export.FavoriteSongs = favs.Songs
-					user.FavoriteSongs = favs.Songs
-				}
-				if len(favs.Artists) > 0 {
-					export.FavoriteArtists = favs.Artists
-					user.FavoriteArtists = favs.Artists
-				}
-			}
-		}
+	if len(export.FavoriteSongs) > 0 || len(export.FavoriteArtists) > 0 || auth == nil {
+		return
+	}
+	fs, ok := auth.(store.FavoritesStore)
+	if !ok || fs == nil {
+		return
+	}
+	favs, err := fs.GetUserFavorites(ctx, user.ID)
+	if err != nil || favs == nil {
+		return
+	}
+	if len(favs.Songs) > 0 {
+		export.FavoriteSongs = favs.Songs
+		user.FavoriteSongs = favs.Songs
+	}
+	if len(favs.Artists) > 0 {
+		export.FavoriteArtists = favs.Artists
+		user.FavoriteArtists = favs.Artists
 	}
 }

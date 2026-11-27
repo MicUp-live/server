@@ -183,6 +183,95 @@ func (s *Store) UpdateRequestWithIdempotency(ctx context.Context, req *models.So
 	return s.UpdateRequestAndReorderWithIdempotency(ctx, req, nil, expected, key, ownerID, route, requestHash)
 }
 
+type idempotencyRequest struct {
+	key         string
+	ownerID     string
+	route       string
+	entityID    string
+	requestHash string
+}
+
+func (s *Store) resolveIdempotencyOutcome(ctx context.Context, idem idempotencyRequest, replayResult, commitResult *store.QueueMutationResult, txErr error, opName string) (*store.QueueMutationResult, error) {
+	if errors.Is(txErr, errIdempotencyRace) {
+		replay, found, replayErr := s.GetIdempotencyResult(ctx, idem.key, idem.ownerID, idem.route, idem.entityID, idem.requestHash)
+		if replayErr != nil {
+			return nil, replayErr
+		}
+		if found {
+			return replay, nil
+		}
+		return nil, fmt.Errorf("%s: concurrent key conflict", opName)
+	}
+	if txErr != nil {
+		return nil, txErr
+	}
+	if replayResult != nil {
+		return replayResult, nil
+	}
+	return commitResult, nil
+}
+
+func validateReorderTarget(reqID string, reorderIDs []string) error {
+	if len(reorderIDs) == 0 {
+		return nil
+	}
+	if err := validateUniqueIDs(reorderIDs, "reorder"); err != nil {
+		return err
+	}
+	for _, id := range reorderIDs {
+		if id == reqID {
+			return nil
+		}
+	}
+	return fmt.Errorf("request %s missing from reorder list: %w", reqID, os.ErrInvalid)
+}
+
+func applyReorderRank(req *models.SongRequest, reorderIDs []string) {
+	for i, id := range reorderIDs {
+		if id == req.ID {
+			req.Rank = computeRequestRank(req.Round, i)
+			return
+		}
+	}
+}
+
+func (s *Store) execUpdateRequestAndReorderTx(ctx context.Context, tx pgx.Tx, req *models.SongRequest, reorderIDs []string, expected *int64, idem idempotencyRequest) (models.SongRequest, *store.QueueMutationResult, *store.QueueMutationResult, error) {
+	now := s.currentTime()
+	if replay, found, err := loadIdempotencyTx(ctx, tx, idem.key, idem.ownerID, idem.route, idem.entityID, idem.requestHash, now); found || err != nil {
+		return models.SongRequest{}, replay, nil, err
+	}
+
+	newVer, err := bumpEventVersionForMutationTx(ctx, tx, req.EventID, expected, now)
+	if err != nil {
+		return models.SongRequest{}, nil, nil, err
+	}
+
+	commitReq := *req
+	commitReq.UpdatedAt = now
+	applyReorderRank(&commitReq, reorderIDs)
+
+	if err := updateSingleRequestTx(ctx, tx, &commitReq, commitReq.Rank, now); err != nil {
+		return models.SongRequest{}, nil, nil, err
+	}
+	if len(reorderIDs) > 0 {
+		if err := applyReorderUpdatesTx(ctx, tx, req.EventID, reorderIDs, req.ID, now); err != nil {
+			return models.SongRequest{}, nil, nil, err
+		}
+	}
+
+	body, err := json.Marshal(&commitReq)
+	if err != nil {
+		return models.SongRequest{}, nil, nil, err
+	}
+	commitResult := &store.QueueMutationResult{
+		StatusCode:   200,
+		Body:         body,
+		QueueVersion: newVer,
+	}
+	err = insertIdempotencyTx(ctx, tx, idem.key, idem.ownerID, idem.route, idem.entityID, idem.requestHash, commitResult, now.Add(idempotencyRetention))
+	return commitReq, nil, commitResult, err
+}
+
 // UpdateRequestAndReorderWithIdempotency atomically updates a request, optionally reorders the queue,
 // advances queue_version, and persists the replayable idempotency record.
 func (s *Store) UpdateRequestAndReorderWithIdempotency(ctx context.Context, req *models.SongRequest, reorderIDs []string, expected *int64, key, ownerID, route, requestHash string) (*store.QueueMutationResult, error) {
@@ -195,22 +284,17 @@ func (s *Store) UpdateRequestAndReorderWithIdempotency(ctx context.Context, req 
 	if err := validateExpectedVersion(expected); err != nil {
 		return nil, err
 	}
-	if len(reorderIDs) > 0 {
-		if err := validateUniqueIDs(reorderIDs, "reorder"); err != nil {
-			return nil, err
-		}
-		reqInReorder := false
-		for _, id := range reorderIDs {
-			if id == req.ID {
-				reqInReorder = true
-				break
-			}
-		}
-		if !reqInReorder {
-			return nil, fmt.Errorf("request %s missing from reorder list: %w", req.ID, os.ErrInvalid)
-		}
+	if err := validateReorderTarget(req.ID, reorderIDs); err != nil {
+		return nil, err
 	}
 
+	idem := idempotencyRequest{
+		key:         key,
+		ownerID:     ownerID,
+		route:       route,
+		entityID:    req.ID,
+		requestHash: requestHash,
+	}
 	var (
 		replayResult *store.QueueMutationResult
 		commitResult *store.QueueMutationResult
@@ -218,67 +302,77 @@ func (s *Store) UpdateRequestAndReorderWithIdempotency(ctx context.Context, req 
 	)
 
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
-		now := s.currentTime()
-		if replay, found, err := loadIdempotencyTx(ctx, tx, key, ownerID, route, req.ID, requestHash, now); found || err != nil {
-			replayResult = replay
-			return err
-		}
-
-		newVer, err := bumpEventVersionForMutationTx(ctx, tx, req.EventID, expected, now)
-		if err != nil {
-			return err
-		}
-
-		commitReq = *req
-		commitReq.UpdatedAt = now
-		if len(reorderIDs) > 0 {
-			for i, id := range reorderIDs {
-				if id == req.ID {
-					commitReq.Rank = computeRequestRank(commitReq.Round, i)
-					break
-				}
-			}
-		}
-
-		if err := updateSingleRequestTx(ctx, tx, &commitReq, commitReq.Rank, now); err != nil {
-			return err
-		}
-		if len(reorderIDs) > 0 {
-			if err := applyReorderUpdatesTx(ctx, tx, req.EventID, reorderIDs, req.ID, now); err != nil {
-				return err
-			}
-		}
-
-		body, err := json.Marshal(&commitReq)
-		if err != nil {
-			return err
-		}
-		commitResult = &store.QueueMutationResult{
-			StatusCode:   200,
-			Body:         body,
-			QueueVersion: newVer,
-		}
-		return insertIdempotencyTx(ctx, tx, key, ownerID, route, req.ID, requestHash, commitResult, now.Add(idempotencyRetention))
+		var txErr error
+		commitReq, replayResult, commitResult, txErr = s.execUpdateRequestAndReorderTx(ctx, tx, req, reorderIDs, expected, idem)
+		return txErr
 	})
-	if errors.Is(err, errIdempotencyRace) {
-		replay, found, replayErr := s.GetIdempotencyResult(ctx, key, ownerID, route, req.ID, requestHash)
-		if replayErr != nil {
-			return nil, replayErr
-		}
-		if found {
-			return replay, nil
-		}
-		return nil, fmt.Errorf("idempotent request update: concurrent key conflict")
-	}
+	res, err := s.resolveIdempotencyOutcome(ctx, idem, replayResult, commitResult, err, "idempotent request update")
 	if err != nil {
 		return nil, err
 	}
-	if replayResult != nil {
-		return replayResult, nil
+	if res == commitResult {
+		*req = commitReq
+	}
+	return res, nil
+}
+
+func validateEmptyReorderEventTx(ctx context.Context, tx pgx.Tx, eventID string, expected *int64) (int64, error) {
+	var (
+		restarting bool
+		deleting   bool
+		currentVer int64
+	)
+	err := tx.QueryRow(ctx, `SELECT restarting, deleting, queue_version FROM events WHERE id = $1 FOR UPDATE`, eventID).Scan(&restarting, &deleting, &currentVer)
+	if err != nil {
+		if isNotFound(err) {
+			return 0, os.ErrNotExist
+		}
+		return 0, err
+	}
+	if deleting {
+		return 0, store.ErrEventDeleting
+	}
+	if expected != nil && currentVer != *expected {
+		return 0, &store.QueueVersionConflictError{Current: currentVer, Expected: *expected}
+	}
+	if restarting {
+		return 0, store.ErrAdmissionConflict
+	}
+	return currentVer, nil
+}
+
+func applyReorderOrValidateEmptyTx(ctx context.Context, tx pgx.Tx, eventID string, orderedIDs []string, expected *int64, now time.Time) (int64, error) {
+	if len(orderedIDs) == 0 {
+		return validateEmptyReorderEventTx(ctx, tx, eventID, expected)
+	}
+	newVer, err := bumpEventVersionForMutationTx(ctx, tx, eventID, expected, now)
+	if err != nil {
+		return 0, err
+	}
+	if err := applyReorderUpdatesTx(ctx, tx, eventID, orderedIDs, "", now); err != nil {
+		return 0, err
+	}
+	return newVer, nil
+}
+
+func (s *Store) execReorderRequestsTx(ctx context.Context, tx pgx.Tx, eventID string, orderedIDs []string, expected *int64, body []byte, idem idempotencyRequest) (*store.QueueMutationResult, *store.QueueMutationResult, error) {
+	now := s.currentTime()
+	if replay, found, err := loadIdempotencyTx(ctx, tx, idem.key, idem.ownerID, idem.route, idem.entityID, idem.requestHash, now); found || err != nil {
+		return replay, nil, err
 	}
 
-	*req = commitReq
-	return commitResult, nil
+	resultVersion, err := applyReorderOrValidateEmptyTx(ctx, tx, eventID, orderedIDs, expected, now)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	commitResult := &store.QueueMutationResult{
+		StatusCode:   200,
+		Body:         body,
+		QueueVersion: resultVersion,
+	}
+	err = insertIdempotencyTx(ctx, tx, idem.key, idem.ownerID, idem.route, idem.entityID, idem.requestHash, commitResult, now.Add(idempotencyRetention))
+	return nil, commitResult, err
 }
 
 // ReorderRequestsWithIdempotency atomically reorders requests, advances queue_version when non-empty,
@@ -299,75 +393,22 @@ func (s *Store) ReorderRequestsWithIdempotency(ctx context.Context, eventID stri
 		return nil, err
 	}
 
+	idem := idempotencyRequest{
+		key:         key,
+		ownerID:     ownerID,
+		route:       route,
+		entityID:    eventID,
+		requestHash: requestHash,
+	}
 	var (
 		replayResult *store.QueueMutationResult
 		commitResult *store.QueueMutationResult
 	)
 
 	err = s.withTx(ctx, func(tx pgx.Tx) error {
-		now := s.currentTime()
-		if replay, found, err := loadIdempotencyTx(ctx, tx, key, ownerID, route, eventID, requestHash, now); found || err != nil {
-			replayResult = replay
-			return err
-		}
-
-		var resultVersion int64
-		if len(orderedIDs) == 0 {
-			var (
-				restarting bool
-				deleting   bool
-				currentVer int64
-			)
-			err := tx.QueryRow(ctx, `SELECT restarting, deleting, queue_version FROM events WHERE id = $1 FOR UPDATE`, eventID).Scan(&restarting, &deleting, &currentVer)
-			if err != nil {
-				if isNotFound(err) {
-					return os.ErrNotExist
-				}
-				return err
-			}
-			if deleting {
-				return store.ErrEventDeleting
-			}
-			if expected != nil && currentVer != *expected {
-				return &store.QueueVersionConflictError{Current: currentVer, Expected: *expected}
-			}
-			if restarting {
-				return store.ErrAdmissionConflict
-			}
-			resultVersion = currentVer
-		} else {
-			newVer, err := bumpEventVersionForMutationTx(ctx, tx, eventID, expected, now)
-			if err != nil {
-				return err
-			}
-			if err := applyReorderUpdatesTx(ctx, tx, eventID, orderedIDs, "", now); err != nil {
-				return err
-			}
-			resultVersion = newVer
-		}
-
-		commitResult = &store.QueueMutationResult{
-			StatusCode:   200,
-			Body:         body,
-			QueueVersion: resultVersion,
-		}
-		return insertIdempotencyTx(ctx, tx, key, ownerID, route, eventID, requestHash, commitResult, now.Add(idempotencyRetention))
+		var txErr error
+		replayResult, commitResult, txErr = s.execReorderRequestsTx(ctx, tx, eventID, orderedIDs, expected, body, idem)
+		return txErr
 	})
-	if errors.Is(err, errIdempotencyRace) {
-		replay, found, replayErr := s.GetIdempotencyResult(ctx, key, ownerID, route, eventID, requestHash)
-		if replayErr != nil {
-			return nil, replayErr
-		}
-		if found {
-			return replay, nil
-		}
-		return nil, fmt.Errorf("idempotent reorder: concurrent key conflict")
-	}
-	if err != nil {
-		return nil, err
-	}
-	if replayResult != nil {
-		return replayResult, nil
-	}
-	return commitResult, nil
+	return s.resolveIdempotencyOutcome(ctx, idem, replayResult, commitResult, err, "idempotent reorder")
 }

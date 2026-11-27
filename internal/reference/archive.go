@@ -161,70 +161,100 @@ func (s *HybridStore) GetObject(ctx context.Context, key string, maxInlineBytes 
 	}
 
 	// 1. Try S3 when configured.
-	if s != nil && s.Client != nil && strings.TrimSpace(s.Bucket) != "" {
-		if maxInlineBytes > 0 && s.Presigner != nil {
-			if head, err := s.Client.HeadObject(ctx, &s3.HeadObjectInput{
-				Bucket: aws.String(s.Bucket),
-				Key:    aws.String(cleanKey),
-			}); err == nil && head.ContentLength != nil && *head.ContentLength > maxInlineBytes {
-				if url, pErr := s.PresignGet(ctx, cleanKey); pErr == nil {
-					ct := inferContentType(cleanKey)
-					if head.ContentType != nil && *head.ContentType != "" {
-						ct = *head.ContentType
-					}
-					return &ObjectResult{
-						ContentType: ct,
-						Size:        *head.ContentLength,
-						Presigned:   url,
-					}, nil
-				}
-			}
-		}
-
-		out, err := s.Client.GetObject(ctx, &s3.GetObjectInput{
-			Bucket: aws.String(s.Bucket),
-			Key:    aws.String(cleanKey),
-		})
-		if err == nil {
-			defer out.Body.Close()
-			body, readErr := io.ReadAll(out.Body)
-			if readErr != nil {
-				return nil, readErr
-			}
-			ct := inferContentType(cleanKey)
-			if out.ContentType != nil && *out.ContentType != "" {
-				ct = *out.ContentType
-			}
-			return &ObjectResult{
-				Body:        body,
-				ContentType: ct,
-				Size:        int64(len(body)),
-			}, nil
-		}
-		if !isS3NotFound(err) {
-			return nil, fmt.Errorf("get reference object %s from S3: %w", cleanKey, err)
-		}
+	res, found, err := s.getObjectFromS3(ctx, cleanKey, maxInlineBytes)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		return res, nil
 	}
 
 	// 2. Fallback to local directories (LocalDistDir then LocalPublicDir).
-	if s != nil {
-		for _, root := range []string{s.LocalDistDir, s.LocalPublicDir} {
-			if strings.TrimSpace(root) == "" {
-				continue
-			}
-			fullPath := filepath.Join(root, filepath.FromSlash(cleanKey))
-			data, err := os.ReadFile(fullPath)
-			if err == nil {
-				return &ObjectResult{
-					Body:        data,
-					ContentType: inferContentType(cleanKey),
-					Size:        int64(len(data)),
-				}, nil
-			}
-		}
+	if res := s.getObjectFromLocal(cleanKey); res != nil {
+		return res, nil
 	}
 
 	return nil, os.ErrNotExist
+}
+
+func (s *HybridStore) getObjectFromS3(ctx context.Context, cleanKey string, maxInlineBytes int64) (*ObjectResult, bool, error) {
+	if s == nil || s.Client == nil || strings.TrimSpace(s.Bucket) == "" {
+		return nil, false, nil
+	}
+	if presigned := s.tryPresignedObject(ctx, cleanKey, maxInlineBytes); presigned != nil {
+		return presigned, true, nil
+	}
+
+	out, err := s.Client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String(s.Bucket),
+		Key:    aws.String(cleanKey),
+	})
+	if err != nil {
+		if !isS3NotFound(err) {
+			return nil, false, fmt.Errorf("get reference object %s from S3: %w", cleanKey, err)
+		}
+		return nil, false, nil
+	}
+	defer out.Body.Close()
+
+	body, readErr := io.ReadAll(out.Body)
+	if readErr != nil {
+		return nil, false, readErr
+	}
+	return &ObjectResult{
+		Body:        body,
+		ContentType: resolveContentType(cleanKey, out.ContentType),
+		Size:        int64(len(body)),
+	}, true, nil
+}
+
+func (s *HybridStore) tryPresignedObject(ctx context.Context, cleanKey string, maxInlineBytes int64) *ObjectResult {
+	if maxInlineBytes <= 0 || s.Presigner == nil {
+		return nil
+	}
+	head, err := s.Client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.Bucket),
+		Key:    aws.String(cleanKey),
+	})
+	if err != nil || head.ContentLength == nil || *head.ContentLength <= maxInlineBytes {
+		return nil
+	}
+	url, pErr := s.PresignGet(ctx, cleanKey)
+	if pErr != nil {
+		return nil
+	}
+	return &ObjectResult{
+		ContentType: resolveContentType(cleanKey, head.ContentType),
+		Size:        *head.ContentLength,
+		Presigned:   url,
+	}
+}
+
+func (s *HybridStore) getObjectFromLocal(cleanKey string) *ObjectResult {
+	if s == nil {
+		return nil
+	}
+	for _, root := range []string{s.LocalDistDir, s.LocalPublicDir} {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		fullPath := filepath.Join(root, filepath.FromSlash(cleanKey))
+		if data, err := os.ReadFile(fullPath); err == nil {
+			return &ObjectResult{
+				Body:        data,
+				ContentType: inferContentType(cleanKey),
+				Size:        int64(len(data)),
+			}
+		}
+	}
+	return nil
+}
+
+func resolveContentType(key string, explicit *string) string {
+	if explicit != nil && *explicit != "" {
+		return *explicit
+	}
+	return inferContentType(key)
 }
 
 func inferContentType(key string) string {

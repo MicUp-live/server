@@ -7,11 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"sort"
 	"strings"
-	"time"
-
-	"github.com/google/uuid"
 
 	"micup.live/server/internal/models"
 	"micup.live/server/internal/store"
@@ -97,155 +93,36 @@ func (s *Service) SubmitRequest(ctx context.Context, cmd SubmitRequestCmd) (*mod
 }
 
 func (s *Service) submitRequestOnce(ctx context.Context, cmd SubmitRequestCmd) (*models.SongRequest, error) {
-	if s.Events == nil {
-		return nil, ErrEventNotFound
-	}
-	event, err := s.Events.GetEvent(ctx, cmd.EventID)
+	event, err := s.loadAdmissibleEvent(ctx, cmd.EventID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrEventNotFound
-		}
-		return nil, fmt.Errorf("load event for request admission: %w", err)
-	}
-	if event == nil {
-		return nil, ErrEventNotFound
+		return nil, err
 	}
 
-	if event.Status == models.EventStatusPaused {
-		return nil, ErrShowPaused
+	input, err := validateSubmitInput(cmd, event)
+	if err != nil {
+		return nil, err
 	}
-	if event.Status == models.EventStatusEnded {
-		return nil, ErrShowEnded
-	}
-	if cmd.IsWriteIn && !event.AllowWriteIns {
-		return nil, ErrWriteInsDisabled
-	}
-
-	singerName := truncateUTF8(strings.TrimSpace(cmd.SingerName), 60)
-	if singerName == "" {
-		return nil, fmt.Errorf("singer name is required: %w", os.ErrInvalid)
-	}
-
-	songTitle := truncateUTF8(strings.TrimSpace(cmd.SongTitle), 150)
-	if songTitle == "" {
-		return nil, fmt.Errorf("song title is required: %w", os.ErrInvalid)
-	}
-
-	songArtist := truncateUTF8(strings.TrimSpace(cmd.SongArtist), 150)
-
-	keyChange := cmd.KeyChange
-	if !event.AllowKeyChange {
-		keyChange = 0
-	} else if keyChange < -6 {
-		keyChange = -6
-	} else if keyChange > 6 {
-		keyChange = 6
-	}
-
-	notes := truncateUTF8(strings.TrimSpace(cmd.Notes), 300)
 
 	existingReqs, err := s.Requests.ListRequestsByEvent(ctx, event.ID)
 	if err != nil {
 		return nil, fmt.Errorf("load queue for request admission: %w", err)
 	}
 
-	normSinger := strings.ToLower(singerName)
-
-	// Submission delay check (burst protection)
-	if event.SubmissionDelay > 0 {
-		for _, er := range existingReqs {
-			if strings.ToLower(strings.TrimSpace(er.SingerName)) == normSinger &&
-				(er.Status == models.StatusPending || er.Status == models.StatusAccepted || er.Status == models.StatusUpNext) {
-				elapsed := time.Since(er.CreatedAt)
-				delay := time.Duration(event.SubmissionDelay) * time.Second
-				if elapsed < delay {
-					remaining := int((delay - elapsed).Seconds()) + 1
-					return nil, &ErrCooldownActive{RemainingSeconds: remaining}
-				}
-			}
-		}
+	normSinger := strings.ToLower(input.singerName)
+	if err := checkSubmissionDelay(existingReqs, normSinger, event.SubmissionDelay); err != nil {
+		return nil, err
 	}
 
-	// Singer turn and active count calculation
-	completedCount := 0
-	activeAhead := 0
-	for _, er := range existingReqs {
-		if strings.ToLower(strings.TrimSpace(er.SingerName)) == normSinger {
-			if er.Status == models.StatusCompleted {
-				completedCount++
-			} else if er.Status == models.StatusPending || er.Status == models.StatusAccepted || er.Status == models.StatusUpNext {
-				activeAhead++
-			}
-		}
-	}
-
+	completedCount, activeAhead := countSingerRequests(existingReqs, normSinger)
 	if event.MaxActivePerSinger > 0 && activeAhead >= event.MaxActivePerSinger {
 		return nil, ErrSingerLimitExceeded
 	}
 
-	initialStatus := models.StatusPending
-	if event.RotationMode == models.RotationModeManual {
-		initialStatus = models.StatusPending
-	} else if event.AutoAccept {
-		initialStatus = models.StatusAccepted
-	}
-
-	now := time.Now().UTC()
-	nowMilli := now.UnixMilli()
-	seq := int64(len(existingReqs) + 1)
-	singerTurn := completedCount + activeAhead + 1
-
-	songID := strings.TrimSpace(cmd.SongID)
-	if cmd.IsWriteIn {
-		songID = ""
-	}
-	songReq := &models.SongRequest{
-		ID:         uuid.NewString(),
-		EventID:    event.ID,
-		SongbookID: event.SongbookID,
-		SongID:     songID,
-		IsWriteIn:  cmd.IsWriteIn,
-		SongTitle:  songTitle,
-		SongArtist: songArtist,
-		SingerName: singerName,
-		KeyChange:  keyChange,
-		Notes:      notes,
-		Status:     initialStatus,
-		SingerTurn: singerTurn,
-		CreatedAt:  now,
-		UpdatedAt:  now,
-	}
-	songReq.CancelToken = GenerateCancelToken(s.Secret, songReq.ID, songReq.EventID)
-	songReq.EditToken = GenerateEditToken(s.Secret, songReq.ID, songReq.EventID)
-
-	var reorderIDs []string
-
-	if initialStatus == models.StatusAccepted {
-		placement := PlaceAcceptedRequest(event, songReq, existingReqs, now)
-		reorderIDs = placement.ReorderIDs
-	} else {
-		songReq.Rank = nowMilli + seq
-		songReq.Round = 0
-	}
+	songReq, reorderIDs := s.buildSubmittedRequest(event, input, existingReqs, completedCount, activeAhead)
 
 	// Atomic commit against the event version used to plan this placement.
 	if err := s.Requests.CreateRequestAtVersion(ctx, songReq, event.MaxActivePerSinger, reorderIDs, event.QueueVersion); err != nil {
-		if errors.Is(err, store.ErrEventNotActive) {
-			current, readErr := s.Events.GetEvent(ctx, event.ID)
-			if readErr != nil {
-				return nil, fmt.Errorf("reload event after admission conflict: %w", readErr)
-			}
-			if current == nil {
-				return nil, ErrEventNotFound
-			}
-			switch current.Status {
-			case models.EventStatusPaused:
-				return nil, ErrShowPaused
-			case models.EventStatusEnded:
-				return nil, ErrShowEnded
-			}
-		}
-		return nil, err
+		return nil, s.mapCreateRequestError(ctx, event.ID, err)
 	}
 
 	return songReq, nil
@@ -263,21 +140,15 @@ type UpdateEventRequestCmd struct {
 
 // UpdateEventRequest updates request status, round, notes, or key change with atomic versioning and idempotency.
 func (s *Service) UpdateEventRequest(ctx context.Context, cmd UpdateEventRequestCmd) (*models.SongRequest, *store.QueueMutationResult, error) {
-	route := fmt.Sprintf("events/%s/requests", cmd.EventID)
-	reqHash := mutationHash(cmd.Update)
+	meta := idempotencyMeta{
+		route:   fmt.Sprintf("events/%s/requests", cmd.EventID),
+		reqHash: mutationHash(cmd.Update),
+	}
 
-	// Idempotency check
-	if cmd.IdempotencyKey != "" {
-		if cmd.HostOwnerID == "" {
-			return nil, nil, ErrUnauthorized
-		}
-		result, found, replayErr := s.Requests.GetIdempotencyResult(ctx, cmd.IdempotencyKey, cmd.HostOwnerID, route, cmd.RequestID, reqHash)
-		if replayErr != nil {
-			return nil, nil, replayErr
-		}
-		if found {
-			return nil, result, nil
-		}
+	if result, found, replayErr := s.checkUpdateIdempotency(ctx, cmd, meta); replayErr != nil {
+		return nil, nil, replayErr
+	} else if found {
+		return nil, result, nil
 	}
 
 	req, err := s.Requests.GetRequest(ctx, cmd.RequestID)
@@ -293,131 +164,15 @@ func (s *Service) UpdateEventRequest(ctx context.Context, cmd UpdateEventRequest
 		req.Status = *cmd.Update.Status
 	}
 
-	var reorderIDs []string
-
-	isEnteringActiveQueue := (oldStatus == models.StatusPending || oldStatus == models.StatusRejected || oldStatus == models.StatusCancelled) &&
-		(req.Status == models.StatusAccepted || req.Status == models.StatusUpNext)
-
-	if isEnteringActiveQueue && req.Status == models.StatusAccepted && cmd.Update.Rank == nil && cmd.Update.Round == nil {
-		event, err := s.Events.GetEvent(ctx, cmd.EventID)
-		if err != nil || event == nil {
-			return nil, nil, ErrEventNotFound
-		}
-		allReqs, err := s.Requests.ListRequestsByEvent(ctx, cmd.EventID)
-		if err != nil {
-			return nil, nil, err
-		}
-		placement := PlaceAcceptedRequest(event, req, allReqs, time.Now())
-		reorderIDs = placement.ReorderIDs
-	} else if (oldStatus == models.StatusPending || oldStatus == models.StatusRejected || oldStatus == models.StatusCancelled) && req.Status == models.StatusUpNext && cmd.Update.Rank == nil {
-		allReqs, err := s.Requests.ListRequestsByEvent(ctx, cmd.EventID)
-		if err != nil {
-			return nil, nil, err
-		}
-		var activeQueue []*models.SongRequest
-		for _, er := range allReqs {
-			if er.ID != req.ID && (er.Status == models.StatusAccepted || er.Status == models.StatusUpNext) {
-				activeQueue = append(activeQueue, er)
-			}
-		}
-		sort.SliceStable(activeQueue, func(i, j int) bool {
-			if activeQueue[i].Rank != activeQueue[j].Rank {
-				return activeQueue[i].Rank < activeQueue[j].Rank
-			}
-			return activeQueue[i].CreatedAt.Before(activeQueue[j].CreatedAt)
-		})
-		if len(activeQueue) == 0 {
-			req.Rank = 1
-		} else if len(activeQueue) == 1 {
-			req.Rank = activeQueue[0].Rank + 1
-		} else {
-			prevRank := activeQueue[0].Rank
-			nextRank := activeQueue[1].Rank
-			if nextRank-prevRank > 1 {
-				req.Rank = prevRank + (nextRank-prevRank)/2
-			} else {
-				req.Rank = prevRank + 1
-				reorderIDs = make([]string, 0, len(activeQueue)+1)
-				reorderIDs = append(reorderIDs, activeQueue[0].ID, req.ID)
-				for _, ar := range activeQueue[1:] {
-					reorderIDs = append(reorderIDs, ar.ID)
-				}
-			}
-		}
-		req.Round = 0
-	} else {
-		if cmd.Update.Rank != nil {
-			req.Rank = *cmd.Update.Rank
-		}
-		if cmd.Update.Round != nil && *cmd.Update.Round > 0 {
-			req.Round = *cmd.Update.Round
-			if cmd.Update.Rank == nil {
-				intraRound := req.Rank % models.RoundRankMultiplier
-				if intraRound <= 0 || intraRound < 1_000_000_000_000 {
-					if !req.CreatedAt.IsZero() {
-						intraRound = req.CreatedAt.UnixMilli()
-					} else {
-						intraRound = time.Now().UTC().UnixMilli()
-					}
-				}
-				req.Rank = (int64(req.Round) * models.RoundRankMultiplier) + intraRound
-			}
-		}
-	}
-
-	if cmd.Update.SongID != nil {
-		req.SongID = strings.TrimSpace(*cmd.Update.SongID)
-	}
-	if cmd.Update.SongTitle != nil && strings.TrimSpace(*cmd.Update.SongTitle) != "" {
-		req.SongTitle = strings.TrimSpace(*cmd.Update.SongTitle)
-	}
-	if cmd.Update.SongArtist != nil && strings.TrimSpace(*cmd.Update.SongArtist) != "" {
-		req.SongArtist = strings.TrimSpace(*cmd.Update.SongArtist)
-	}
-	if cmd.Update.SingerName != nil && strings.TrimSpace(*cmd.Update.SingerName) != "" {
-		req.SingerName = strings.TrimSpace(*cmd.Update.SingerName)
-	}
-	if cmd.Update.KeyChange != nil {
-		req.KeyChange = *cmd.Update.KeyChange
-	}
-	if cmd.Update.Notes != nil {
-		req.Notes = *cmd.Update.Notes
-	}
-	if cmd.Update.DeclineReason != nil {
-		req.DeclineReason = *cmd.Update.DeclineReason
-	}
-	now := time.Now().UTC()
-	syncCompletedAt(req, oldStatus, now)
-	req.UpdatedAt = now
-
-	// Persist via atomic order store
-	if cmd.IdempotencyKey != "" {
-		result, err := s.Requests.UpdateRequestAndReorderWithIdempotency(ctx, req, reorderIDs, cmd.ExpectedVer, cmd.IdempotencyKey, cmd.HostOwnerID, route, reqHash)
-		if err != nil {
-			return nil, nil, err
-		}
-		return req, result, nil
-	}
-
-	if cmd.ExpectedVer != nil {
-		if err := s.Requests.UpdateRequestAndReorderWithQueueVersion(ctx, req, reorderIDs, *cmd.ExpectedVer); err != nil {
-			return nil, nil, err
-		}
-		return req, nil, nil
-	}
-
-	if isEnteringActiveQueue || len(reorderIDs) > 0 {
-		if err := s.Requests.UpdateRequestAndReorder(ctx, req, reorderIDs); err != nil {
-			return nil, nil, err
-		}
-		return req, nil, nil
-	}
-
-	if err := s.Requests.UpdateRequest(ctx, req); err != nil {
+	enteringActive := isEnteringActiveQueueStatus(oldStatus, req.Status)
+	reorderIDs, err := s.planRequestPlacement(ctx, cmd, req, enteringActive)
+	if err != nil {
 		return nil, nil, err
 	}
 
-	return req, nil, nil
+	applyRequestFieldUpdates(req, cmd.Update, oldStatus)
+
+	return s.persistUpdatedRequest(ctx, cmd, req, reorderIDs, enteringActive, meta)
 }
 
 // ReorderEventRequestsCmd encapsulates host manual reorder inputs.

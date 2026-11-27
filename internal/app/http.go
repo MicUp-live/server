@@ -79,45 +79,52 @@ const (
 )
 
 func corsMiddleware(next http.Handler, origins []string) http.Handler {
-	allowedOrigins := make(map[string]struct{}, len(origins))
-	for _, origin := range origins {
-		allowedOrigins[origin] = struct{}{}
-	}
+	allowedOrigins := buildOriginSet(origins)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
-		if origin != "" {
-			w.Header().Add("Vary", "Origin")
-		}
-
-		isAllowed := false
-		if _, wildcard := allowedOrigins["*"]; wildcard {
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-			isAllowed = true
-		} else if _, allowed := allowedOrigins[origin]; allowed && origin != "" {
-			w.Header().Set("Access-Control-Allow-Origin", origin)
-			w.Header().Set("Access-Control-Allow-Credentials", "true")
-			isAllowed = true
-		}
-
-		if isAllowed {
-			w.Header().Set("Access-Control-Allow-Methods", corsAllowedMethods)
-			w.Header().Set("Access-Control-Allow-Headers", corsAllowedHeaders)
-			w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
-		}
+		isAllowed := applyCORSHeaders(w, origin, allowedOrigins)
 
 		if r.Method == http.MethodOptions {
-			if isAllowed {
-				w.WriteHeader(http.StatusNoContent)
-				return
-			}
-			if origin != "" {
-				w.WriteHeader(http.StatusForbidden)
-				return
-			}
-			w.WriteHeader(http.StatusNoContent)
+			writeCORSPreflight(w, isAllowed, origin)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func buildOriginSet(origins []string) map[string]struct{} {
+	allowedOrigins := make(map[string]struct{}, len(origins))
+	for _, origin := range origins {
+		allowedOrigins[origin] = struct{}{}
+	}
+	return allowedOrigins
+}
+
+func applyCORSHeaders(w http.ResponseWriter, origin string, allowedOrigins map[string]struct{}) bool {
+	if origin != "" {
+		w.Header().Add("Vary", "Origin")
+	}
+
+	if _, wildcard := allowedOrigins["*"]; wildcard {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+	} else if _, allowed := allowedOrigins[origin]; allowed && origin != "" {
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Access-Control-Allow-Credentials", "true")
+	} else {
+		return false
+	}
+
+	w.Header().Set("Access-Control-Allow-Methods", corsAllowedMethods)
+	w.Header().Set("Access-Control-Allow-Headers", corsAllowedHeaders)
+	w.Header().Set("Access-Control-Expose-Headers", corsExposeHeaders)
+	return true
+}
+
+func writeCORSPreflight(w http.ResponseWriter, isAllowed bool, origin string) {
+	if !isAllowed && origin != "" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

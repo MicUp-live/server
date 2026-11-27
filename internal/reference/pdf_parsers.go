@@ -59,125 +59,138 @@ func parsePartyTymeCatalogText(text string) ([]CanonicalTrack, map[string]Canoni
 	discMap := make(map[string]CanonicalTrack, 60000)
 
 	var pending *pendingPartyTymeRow
-	flushPending := func() {
-		if pending == nil {
-			return
-		}
-		row := pending
-		pending = nil
-		cleanArtist := UninvertArtist(row.rawArtist)
-		cleanTitle := StripNoiseTags(uninvertPDFTitle(row.rawTitle))
-		if cleanArtist == "" || cleanTitle == "" {
-			return
-		}
-		id := GenerateCanonicalID(cleanArtist, cleanTitle)
-		primaryCode := row.hdCode
-		if primaryCode == "" {
-			primaryCode = row.cdgCode
-		}
-		track := CanonicalTrack{
-			ID:       id,
-			Artist:   cleanArtist,
-			Title:    cleanTitle,
-			Genre:    cleanPartyTymeGenre(row.rawGenre),
-			DiscCode: primaryCode,
-			Source:   "Party Tyme",
-		}
-		tracks = append(tracks, track)
-		if row.hdCode != "" {
-			t := track
-			t.DiscCode = row.hdCode
-			discMap[row.hdCode] = t
-		}
-		if row.cdgCode != "" {
-			t := track
-			t.DiscCode = row.cdgCode
-			discMap[row.cdgCode] = t
-		}
-	}
-
 	for _, line := range lines {
 		line = strings.TrimRight(line, "\r\f")
-		if m := partyTymeRowRe.FindStringSubmatch(line); m != nil && (strings.TrimSpace(m[1]) != "" || strings.TrimSpace(m[2]) != "") {
-			hdCode := strings.TrimSpace(m[1])
-			cdgCode := strings.TrimSpace(m[2])
-			rest := strings.TrimSpace(m[3])
-			cols := colGapRe.Split(rest, -1)
-			if len(cols) < 2 {
-				continue
-			}
-			flushPending()
-			var rawGenre string
-			if len(cols) >= 3 {
-				rawGenre = strings.TrimSpace(cols[2])
-			}
-			// Measure exact column start positions of Title, Artist, and Genre in the line
-			restStart := strings.Index(line, rest)
-			if restStart < 0 {
-				restStart = 35
-			}
-			chunkLocs := nonSpaceChunkRe.FindAllStringIndex(line[restStart:], -1)
-			artistCol := 65
-			genreCol := 85
-			if len(chunkLocs) >= 2 {
-				artistCol = restStart + chunkLocs[1][0]
-			}
-			if len(chunkLocs) >= 3 {
-				genreCol = restStart + chunkLocs[2][0]
-			} else {
-				genreCol = artistCol + len(cols[1]) + 4
-				if genreCol < 82 {
-					genreCol = 82
-				}
-			}
-			pending = &pendingPartyTymeRow{
-				hdCode:    hdCode,
-				cdgCode:   cdgCode,
-				rawTitle:  cols[0],
-				rawArtist: cols[1],
-				rawGenre:  rawGenre,
-				artistCol: artistCol,
-				genreCol:  genreCol,
+		if m := partyTymeRowRe.FindStringSubmatch(line); hasPartyTymeRowCode(m) {
+			if row, ok := parsePartyTymeRowStart(line, m); ok {
+				tracks = flushPartyTymePending(pending, tracks, discMap)
+				pending = row
 			}
 			continue
 		}
+		if pending == nil || isPartyTymeContinuationNoise(line) {
+			continue
+		}
+		appendPartyTymeContinuation(pending, line)
+	}
+	tracks = flushPartyTymePending(pending, tracks, discMap)
+	return tracks, discMap
+}
 
-		if pending == nil {
+func hasPartyTymeRowCode(m []string) bool {
+	return m != nil && (strings.TrimSpace(m[1]) != "" || strings.TrimSpace(m[2]) != "")
+}
+
+func flushPartyTymePending(pending *pendingPartyTymeRow, tracks []CanonicalTrack, discMap map[string]CanonicalTrack) []CanonicalTrack {
+	if pending == nil {
+		return tracks
+	}
+	cleanArtist := UninvertArtist(pending.rawArtist)
+	cleanTitle := StripNoiseTags(uninvertPDFTitle(pending.rawTitle))
+	if cleanArtist == "" || cleanTitle == "" {
+		return tracks
+	}
+	primaryCode := pending.hdCode
+	if primaryCode == "" {
+		primaryCode = pending.cdgCode
+	}
+	track := CanonicalTrack{
+		ID:       GenerateCanonicalID(cleanArtist, cleanTitle),
+		Artist:   cleanArtist,
+		Title:    cleanTitle,
+		Genre:    cleanPartyTymeGenre(pending.rawGenre),
+		DiscCode: primaryCode,
+		Source:   "Party Tyme",
+	}
+	tracks = append(tracks, track)
+	if pending.hdCode != "" {
+		t := track
+		t.DiscCode = pending.hdCode
+		discMap[pending.hdCode] = t
+	}
+	if pending.cdgCode != "" {
+		t := track
+		t.DiscCode = pending.cdgCode
+		discMap[pending.cdgCode] = t
+	}
+	return tracks
+}
+
+func parsePartyTymeRowStart(line string, m []string) (*pendingPartyTymeRow, bool) {
+	rest := strings.TrimSpace(m[3])
+	cols := colGapRe.Split(rest, -1)
+	if len(cols) < 2 {
+		return nil, false
+	}
+	var rawGenre string
+	if len(cols) >= 3 {
+		rawGenre = strings.TrimSpace(cols[2])
+	}
+	artistCol, genreCol := measurePartyTymeColumns(line, rest, cols[1])
+	return &pendingPartyTymeRow{
+		hdCode:    strings.TrimSpace(m[1]),
+		cdgCode:   strings.TrimSpace(m[2]),
+		rawTitle:  cols[0],
+		rawArtist: cols[1],
+		rawGenre:  rawGenre,
+		artistCol: artistCol,
+		genreCol:  genreCol,
+	}, true
+}
+
+func measurePartyTymeColumns(line, rest, artistText string) (int, int) {
+	// Measure exact column start positions of Title, Artist, and Genre in the line.
+	restStart := strings.Index(line, rest)
+	if restStart < 0 {
+		restStart = 35
+	}
+	chunkLocs := nonSpaceChunkRe.FindAllStringIndex(line[restStart:], -1)
+	artistCol := 65
+	if len(chunkLocs) >= 2 {
+		artistCol = restStart + chunkLocs[1][0]
+	}
+	if len(chunkLocs) >= 3 {
+		return artistCol, restStart + chunkLocs[2][0]
+	}
+	genreCol := artistCol + len(artistText) + 4
+	if genreCol < 82 {
+		genreCol = 82
+	}
+	return artistCol, genreCol
+}
+
+func isPartyTymeContinuationNoise(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || partyTymePageNumRe.MatchString(trimmed) {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.Contains(lower, "partytyme.net") ||
+		(strings.HasPrefix(lower, "new") && strings.Contains(lower, "song title")) ||
+		strings.HasPrefix(lower, "date of") {
+		return true
+	}
+	indent := len(line) - len(strings.TrimLeft(line, " "))
+	return indent < 28
+}
+
+func appendPartyTymeContinuation(pending *pendingPartyTymeRow, line string) {
+	// Route each whitespace-separated chunk on the continuation line to Title, Artist, or Genre by its column start offset.
+	for _, loc := range nonSpaceChunkRe.FindAllStringIndex(line, -1) {
+		col := loc[0]
+		chunk := strings.TrimSpace(line[loc[0]:loc[1]])
+		if chunk == "" {
 			continue
 		}
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || partyTymePageNumRe.MatchString(trimmed) {
-			continue
-		}
-		lower := strings.ToLower(trimmed)
-		if strings.Contains(lower, "partytyme.net") ||
-			(strings.HasPrefix(lower, "new") && strings.Contains(lower, "song title")) ||
-			strings.HasPrefix(lower, "date of") {
-			continue
-		}
-		indent := len(line) - len(strings.TrimLeft(line, " "))
-		if indent < 28 {
-			continue
-		}
-		// Route each whitespace-separated chunk on the continuation line to Title, Artist, or Genre by its column start offset.
-		for _, loc := range nonSpaceChunkRe.FindAllStringIndex(line, -1) {
-			col := loc[0]
-			chunk := strings.TrimSpace(line[loc[0]:loc[1]])
-			if chunk == "" {
-				continue
-			}
-			switch {
-			case col >= pending.genreCol-5 || partyTymeGenreWordRe.MatchString(chunk):
-				pending.rawGenre = strings.TrimSpace(pending.rawGenre + " " + chunk)
-			case col >= pending.artistCol-5:
-				pending.rawArtist = strings.TrimSpace(pending.rawArtist + " " + chunk)
-			default:
-				pending.rawTitle = strings.TrimSpace(pending.rawTitle + " " + chunk)
-			}
+		switch {
+		case col >= pending.genreCol-5 || partyTymeGenreWordRe.MatchString(chunk):
+			pending.rawGenre = strings.TrimSpace(pending.rawGenre + " " + chunk)
+		case col >= pending.artistCol-5:
+			pending.rawArtist = strings.TrimSpace(pending.rawArtist + " " + chunk)
+		default:
+			pending.rawTitle = strings.TrimSpace(pending.rawTitle + " " + chunk)
 		}
 	}
-	flushPending()
-	return tracks, discMap
 }
 
 func isSoundChoiceBannerOrFooter(trimmed string) bool {
@@ -202,205 +215,209 @@ type scColumnCell struct {
 }
 
 func splitTwoColumnLine(line string, colSplit, leftTitleCol, rightTitleCol int) (scColumnCell, scColumnCell) {
-	var rawLeft, rawRight string
-	rightStart := colSplit
+	rawLeft, rawRight, rightStart := splitTwoColumnRaw(line, colSplit)
+	return scColumnCell{
+			text:     rawLeft,
+			indented: isCellIndented(rawLeft, 0, leftTitleCol, 1),
+		}, scColumnCell{
+			text:     rawRight,
+			indented: isCellIndented(rawRight, rightStart, rightTitleCol, 0),
+		}
+}
+
+func splitTwoColumnRaw(line string, colSplit int) (string, string, int) {
 	// 1. If a disc code finishes in the left column, split right after that disc code.
-	foundLeftDisc := false
 	for _, loc := range scDiscTokenRe.FindAllStringIndex(line, -1) {
 		if loc[1] <= colSplit+8 {
-			rawLeft = line[:loc[1]]
-			rawRight = line[loc[1]:]
-			rightStart = loc[1]
-			foundLeftDisc = true
-			break
+			return line[:loc[1]], line[loc[1]:], loc[1]
 		}
 	}
-	if !foundLeftDisc {
-		if len(line) <= colSplit {
-			rawLeft = line
-		} else if strings.TrimSpace(line[:colSplit]) == "" {
-			rawRight = line[colSplit:]
-			rightStart = colSplit
-		} else {
-			bestSplit := -1
-			for _, gap := range wideGapRe.FindAllStringIndex(line, -1) {
-				if gap[1] >= colSplit-10 && gap[0] <= colSplit+12 {
-					bestSplit = gap[1]
-					break
-				}
-			}
-			if bestSplit > 0 {
-				rawLeft = line[:bestSplit]
-				rawRight = line[bestSplit:]
-				rightStart = bestSplit
-			} else {
-				rawLeft = line[:colSplit]
-				rawRight = line[colSplit:]
-				rightStart = colSplit
-			}
+	if len(line) <= colSplit {
+		return line, "", colSplit
+	}
+	if strings.TrimSpace(line[:colSplit]) == "" {
+		return "", line[colSplit:], colSplit
+	}
+	for _, gap := range wideGapRe.FindAllStringIndex(line, -1) {
+		if gap[1] >= colSplit-10 && gap[0] <= colSplit+12 {
+			return line[:gap[1]], line[gap[1]:], gap[1]
 		}
 	}
+	return line[:colSplit], line[colSplit:], colSplit
+}
 
-	leftIndented := false
-	if strings.TrimSpace(rawLeft) != "" {
-		firstLeft := len(rawLeft) - len(strings.TrimLeft(rawLeft, " "))
-		if firstLeft >= leftTitleCol && firstLeft >= 1 {
-			leftIndented = true
-		}
+func isCellIndented(raw string, offset, titleCol, minIndent int) bool {
+	if strings.TrimSpace(raw) == "" {
+		return false
 	}
-	rightIndented := false
-	if strings.TrimSpace(rawRight) != "" {
-		firstNonSpace := rightStart + (len(rawRight) - len(strings.TrimLeft(rawRight, " ")))
-		if firstNonSpace >= rightTitleCol {
-			rightIndented = true
-		}
-	}
-	return scColumnCell{text: rawLeft, indented: leftIndented}, scColumnCell{text: rawRight, indented: rightIndented}
+	indent := len(raw) - len(strings.TrimLeft(raw, " "))
+	return offset+indent >= titleCol && indent >= minIndent
 }
 
 // parseTwoColumnArtistHeaderText parses 2-column-per-page "Songs by Artist" PDFs
 // (such as Sound Choice catalogs where section lines set the current artist
 // and track lines contain "Title   SC####-##").
 func parseTwoColumnArtistHeaderText(text, defaultProvider string) ([]CanonicalTrack, map[string]CanonicalTrack) {
-	pages := strings.Split(text, "\f")
-	var tracks []CanonicalTrack
-	discMap := make(map[string]CanonicalTrack, 36000)
+	state := twoColumnParserState{
+		defaultProvider: defaultProvider,
+		discMap:         make(map[string]CanonicalTrack, 36000),
+		lastTrackIdx:    -1,
+	}
+	for _, page := range strings.Split(text, "\f") {
+		state.processPage(page)
+	}
+	return state.tracks, state.discMap
+}
 
-	var currentArtist string
-	lastTrackIdx := -1
-	lastDiscCode := ""
-	lastRawTitle := ""
-	lastWasArtist := false
+type twoColumnParserState struct {
+	defaultProvider string
+	tracks          []CanonicalTrack
+	discMap         map[string]CanonicalTrack
+	currentArtist   string
+	lastTrackIdx    int
+	lastDiscCode    string
+	lastRawTitle    string
+	lastWasArtist   bool
+}
 
-	processCell := func(cell scColumnCell) {
-		trimmed := strings.TrimSpace(cell.text)
-		if isSoundChoiceBannerOrFooter(trimmed) {
-			return
+func (s *twoColumnParserState) resetColumnState() {
+	s.lastWasArtist = false
+	s.lastTrackIdx = -1
+	s.lastDiscCode = ""
+	s.lastRawTitle = ""
+}
+
+func (s *twoColumnParserState) flushPage(leftCells, rightCells []scColumnCell) {
+	s.resetColumnState()
+	for _, cell := range leftCells {
+		s.processCell(cell)
+	}
+	s.resetColumnState()
+	for _, cell := range rightCells {
+		s.processCell(cell)
+	}
+}
+
+func (s *twoColumnParserState) processCell(cell scColumnCell) {
+	trimmed := strings.TrimSpace(cell.text)
+	if isSoundChoiceBannerOrFooter(trimmed) {
+		return
+	}
+	if m := scDiscSuffixRe.FindStringSubmatch(trimmed); m != nil {
+		s.addTrackFromMatch(m)
+		return
+	}
+	if len(trimmed) > 1 {
+		s.processNonTrackCell(trimmed, cell.indented)
+	}
+}
+
+func (s *twoColumnParserState) addTrackFromMatch(m []string) {
+	if s.currentArtist == "" {
+		return
+	}
+	rawTitlePart := strings.TrimSpace(m[1])
+	rawTitle := uninvertPDFTitle(rawTitlePart)
+	discCode := NormalizeDiscCode(strings.ToUpper(strings.TrimSpace(m[2])))
+	cleanArtist := UninvertArtist(s.currentArtist)
+	cleanTitle := StripNoiseTags(rawTitle)
+	if cleanArtist == "" || cleanTitle == "" {
+		return
+	}
+	provider := ResolveProvider(discCode, s.defaultProvider)
+	if provider == "" {
+		provider = s.defaultProvider
+	}
+	tr := CanonicalTrack{
+		ID:       GenerateCanonicalID(cleanArtist, cleanTitle),
+		Artist:   cleanArtist,
+		Title:    cleanTitle,
+		DiscCode: discCode,
+		Source:   provider,
+	}
+	s.discMap[discCode] = tr
+	s.tracks = append(s.tracks, tr)
+	s.lastTrackIdx = len(s.tracks) - 1
+	s.lastDiscCode = discCode
+	s.lastRawTitle = rawTitlePart
+	s.lastWasArtist = false
+}
+
+func (s *twoColumnParserState) processNonTrackCell(trimmed string, indented bool) {
+	artistHeader := strings.TrimSpace(wvocalSuffixRe.ReplaceAllString(trimmed, ""))
+	if artistHeader == "" {
+		// Standalone "(Wvocal)" continuation line: preserve currentArtist.
+		return
+	}
+	if indented && s.lastTrackIdx >= 0 && s.lastDiscCode != "" && len(s.lastRawTitle) >= 32 {
+		// Indented line immediately following a long wrapped track line is a song title continuation.
+		s.lastRawTitle = strings.TrimSpace(s.lastRawTitle + " " + trimmed)
+		prev := s.tracks[s.lastTrackIdx]
+		combinedTitle := StripNoiseTags(uninvertPDFTitle(s.lastRawTitle))
+		prev.Title = combinedTitle
+		prev.ID = GenerateCanonicalID(prev.Artist, combinedTitle)
+		s.tracks[s.lastTrackIdx] = prev
+		s.discMap[s.lastDiscCode] = prev
+		return
+	}
+	if s.lastWasArtist && s.currentArtist != "" && !strings.EqualFold(s.currentArtist, artistHeader) {
+		s.currentArtist = strings.TrimSpace(s.currentArtist + " " + artistHeader)
+	} else {
+		s.currentArtist = artistHeader
+	}
+	s.lastWasArtist = true
+	s.lastTrackIdx = -1
+	s.lastDiscCode = ""
+	s.lastRawTitle = ""
+}
+
+func (s *twoColumnParserState) processPage(page string) {
+	var leftCells, rightCells []scColumnCell
+	colSplit, leftTitleCol, rightTitleCol := 52, 1, 55
+	for _, line := range strings.Split(page, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" {
+			continue
 		}
-		if m := scDiscSuffixRe.FindStringSubmatch(trimmed); m != nil {
-			if currentArtist == "" {
-				return
-			}
-			rawTitlePart := strings.TrimSpace(m[1])
-			rawTitle := uninvertPDFTitle(rawTitlePart)
-			discCode := NormalizeDiscCode(strings.ToUpper(strings.TrimSpace(m[2])))
-			cleanArtist := UninvertArtist(currentArtist)
-			cleanTitle := StripNoiseTags(rawTitle)
-			if cleanArtist == "" || cleanTitle == "" {
-				return
-			}
-			provider := ResolveProvider(discCode, defaultProvider)
-			if provider == "" {
-				provider = defaultProvider
-			}
-			tr := CanonicalTrack{
-				ID:       GenerateCanonicalID(cleanArtist, cleanTitle),
-				Artist:   cleanArtist,
-				Title:    cleanTitle,
-				DiscCode: discCode,
-				Source:   provider,
-			}
-			discMap[discCode] = tr
-			tracks = append(tracks, tr)
-			lastTrackIdx = len(tracks) - 1
-			lastDiscCode = discCode
-			lastRawTitle = rawTitlePart
-			lastWasArtist = false
-			return
+		if strings.Contains(strings.ToLower(trimmedLine), "songs by artist") && (len(leftCells) > 0 || len(rightCells) > 0) {
+			s.flushPage(leftCells, rightCells)
+			leftCells, rightCells = leftCells[:0], rightCells[:0]
+			colSplit, leftTitleCol, rightTitleCol = 52, 1, 55
+			continue
 		}
-		if len(trimmed) > 1 {
-			artistHeader := strings.TrimSpace(wvocalSuffixRe.ReplaceAllString(trimmed, ""))
-			if artistHeader == "" {
-				// Standalone "(Wvocal)" continuation line: preserve currentArtist.
-				return
-			}
-			if cell.indented && lastTrackIdx >= 0 && lastDiscCode != "" && len(lastRawTitle) >= 32 {
-				// Indented line immediately following a long wrapped track line is a song title continuation.
-				lastRawTitle = strings.TrimSpace(lastRawTitle + " " + trimmed)
-				prev := tracks[lastTrackIdx]
-				combinedTitle := StripNoiseTags(uninvertPDFTitle(lastRawTitle))
-				prev.Title = combinedTitle
-				prev.ID = GenerateCanonicalID(prev.Artist, combinedTitle)
-				tracks[lastTrackIdx] = prev
-				discMap[lastDiscCode] = prev
-				return
-			}
-			if lastWasArtist && currentArtist != "" && !strings.EqualFold(currentArtist, artistHeader) {
-				currentArtist = strings.TrimSpace(currentArtist + " " + artistHeader)
-			} else {
-				currentArtist = artistHeader
-			}
-			lastWasArtist = true
-			lastTrackIdx = -1
-			lastDiscCode = ""
-			lastRawTitle = ""
+		if scHeaderColsRe.MatchString(trimmedLine) {
+			colSplit, leftTitleCol, rightTitleCol = parseHeaderColumns(line, colSplit, leftTitleCol, rightTitleCol)
+			continue
+		}
+		if isSoundChoiceBannerOrFooter(trimmedLine) {
+			continue
+		}
+		leftCell, rightCell := splitTwoColumnLine(line, colSplit, leftTitleCol, rightTitleCol)
+		leftCells = appendNonEmptyCell(leftCells, leftCell)
+		rightCells = appendNonEmptyCell(rightCells, rightCell)
+	}
+	s.flushPage(leftCells, rightCells)
+}
+
+func parseHeaderColumns(line string, colSplit, leftTitleCol, rightTitleCol int) (int, int, int) {
+	if firstTitle := strings.Index(line, "Title"); firstTitle >= 1 && firstTitle <= 6 {
+		leftTitleCol = firstTitle
+	}
+	if idx := strings.Index(line, "DiscID"); idx > 15 {
+		colSplit = idx + len("DiscID")
+		if secondTitle := strings.Index(line[colSplit:], "Title"); secondTitle >= 0 {
+			rightTitleCol = colSplit + secondTitle
+		} else {
+			rightTitleCol = colSplit + 6
 		}
 	}
+	return colSplit, leftTitleCol, rightTitleCol
+}
 
-	flushPage := func(leftCells, rightCells []scColumnCell) {
-		lastWasArtist = false
-		lastTrackIdx = -1
-		lastDiscCode = ""
-		lastRawTitle = ""
-		for _, cell := range leftCells {
-			processCell(cell)
-		}
-		lastWasArtist = false
-		lastTrackIdx = -1
-		lastDiscCode = ""
-		lastRawTitle = ""
-		for _, cell := range rightCells {
-			processCell(cell)
-		}
+func appendNonEmptyCell(cells []scColumnCell, cell scColumnCell) []scColumnCell {
+	if strings.TrimSpace(cell.text) == "" {
+		return cells
 	}
-
-	for _, page := range pages {
-		var leftCells, rightCells []scColumnCell
-		colSplit := 52
-		leftTitleCol := 1
-		rightTitleCol := 55
-		for _, line := range strings.Split(page, "\n") {
-			line = strings.TrimRight(line, "\r")
-			trimmedLine := strings.TrimSpace(line)
-			if trimmedLine == "" {
-				continue
-			}
-			lowerLine := strings.ToLower(trimmedLine)
-			if strings.Contains(lowerLine, "songs by artist") && (len(leftCells) > 0 || len(rightCells) > 0) {
-				flushPage(leftCells, rightCells)
-				leftCells = leftCells[:0]
-				rightCells = rightCells[:0]
-				colSplit = 52
-				leftTitleCol = 1
-				rightTitleCol = 55
-				continue
-			}
-			if scHeaderColsRe.MatchString(trimmedLine) {
-				if firstTitle := strings.Index(line, "Title"); firstTitle >= 1 && firstTitle <= 6 {
-					leftTitleCol = firstTitle
-				}
-				if idx := strings.Index(line, "DiscID"); idx > 15 {
-					colSplit = idx + len("DiscID")
-					if secondTitle := strings.Index(line[colSplit:], "Title"); secondTitle >= 0 {
-						rightTitleCol = colSplit + secondTitle
-					} else {
-						rightTitleCol = colSplit + 6
-					}
-				}
-				continue
-			}
-			if isSoundChoiceBannerOrFooter(trimmedLine) {
-				continue
-			}
-			leftCell, rightCell := splitTwoColumnLine(line, colSplit, leftTitleCol, rightTitleCol)
-			if strings.TrimSpace(leftCell.text) != "" {
-				leftCells = append(leftCells, leftCell)
-			}
-			if strings.TrimSpace(rightCell.text) != "" {
-				rightCells = append(rightCells, rightCell)
-			}
-		}
-		flushPage(leftCells, rightCells)
-	}
-	return tracks, discMap
+	return append(cells, cell)
 }

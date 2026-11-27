@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -187,15 +188,9 @@ func ParseKaraFunCSV(r io.Reader) ([]CanonicalTrack, error) {
 		return nil, fmt.Errorf("read header: %w", err)
 	}
 
-	colIndex := make(map[string]int)
-	for i, col := range header {
-		colIndex[strings.ToLower(strings.Trim(col, `"`))] = i
-	}
-
-	for _, reqCol := range []string{"title", "artist"} {
-		if _, ok := colIndex[reqCol]; !ok {
-			return nil, fmt.Errorf("missing required column: %s", reqCol)
-		}
+	colIndex := buildQuotedCSVHeaderIndex(header)
+	if err := requireCSVColumns(colIndex, "title", "artist"); err != nil {
+		return nil, err
 	}
 
 	var tracks []CanonicalTrack
@@ -207,40 +202,9 @@ func ParseKaraFunCSV(r io.Reader) ([]CanonicalTrack, error) {
 		if err != nil {
 			continue // skip malformed lines
 		}
-
-		title := strings.Trim(record[colIndex["title"]], `" `)
-		artist := strings.Trim(record[colIndex["artist"]], `" `)
-		if title == "" || artist == "" {
-			continue
+		if track, ok := parseKaraFunRecord(record, colIndex); ok {
+			tracks = append(tracks, track)
 		}
-
-		cleanArtist := UninvertArtist(artist)
-		cleanTitle := StripNoiseTags(title)
-		id := GenerateCanonicalID(cleanArtist, cleanTitle)
-
-		track := CanonicalTrack{
-			ID:     id,
-			Artist: cleanArtist,
-			Title:  cleanTitle,
-			Source: "karafun",
-		}
-
-		if idx, ok := colIndex["styles"]; ok && idx < len(record) {
-			track.Genre = strings.Trim(record[idx], `" `)
-		}
-		if idx, ok := colIndex["year"]; ok && idx < len(record) {
-			if y, err := strconv.Atoi(strings.TrimSpace(record[idx])); err == nil && y > 1900 && y < 2100 {
-				track.Year = y
-			}
-		}
-		if idx, ok := colIndex["duo"]; ok && idx < len(record) {
-			track.Duo = strings.TrimSpace(record[idx]) == "1"
-		}
-		if idx, ok := colIndex["explicit"]; ok && idx < len(record) {
-			track.Explicit = strings.TrimSpace(record[idx]) == "1"
-		}
-
-		tracks = append(tracks, track)
 	}
 
 	return tracks, nil
@@ -309,100 +273,23 @@ func ParseZoomCSV(r io.Reader) ([]CanonicalTrack, error) {
 // ParseSongbookText parses tabular multi-column songbook text extracted from PDFs.
 // Supports 2-column (Artist, Title) and 3-column (Disc, Artist, Title or Artist, Title, Disc) layouts.
 func ParseSongbookText(text, defaultProvider string) ([]CanonicalTrack, map[string]CanonicalTrack, error) {
-	if strings.Contains(text, "Partytyme.net") || strings.Contains(text, "CDG-MP3G") {
-		tracks, dm := parsePartyTymeCatalogText(text)
-		if len(dm) > 0 {
-			return tracks, dm, nil
-		}
+	if tracks, dm, ok := parseKnownSongbookFormat(text, defaultProvider); ok {
+		return tracks, dm, nil
 	}
-	if strings.Contains(text, "Songs by Artist") && strings.Contains(text, "DiscID") {
-		tracks, dm := parseTwoColumnArtistHeaderText(text, defaultProvider)
-		if len(dm) > 0 {
-			return tracks, dm, nil
-		}
-	}
-	if strings.Contains(text, "Made Famous By") && strings.Contains(text, "Song Title") {
-		tracks := parseSunflyTwoColumnText(text, defaultProvider)
-		if len(tracks) > 0 {
-			return tracks, make(map[string]CanonicalTrack), nil
-		}
-	}
-	lines := strings.Split(text, "\n")
+
 	colSplitRegex := regexp.MustCompile(`\s{2,}`)
 	discCodeRegex := regexp.MustCompile(`(?i)^[A-Z]{2,5}\d{2,6}[A-Z]?([-_]\d{1,3}){0,2}$`)
 
 	var tracks []CanonicalTrack
 	discMap := make(map[string]CanonicalTrack)
 
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+	for _, line := range strings.Split(text, "\n") {
+		track, ok := parseSongbookLine(line, defaultProvider, colSplitRegex, discCodeRegex)
+		if !ok {
 			continue
 		}
-
-		// Skip common page headers and footers
-		lower := strings.ToLower(trimmed)
-		if strings.HasPrefix(lower, "page ") || strings.HasPrefix(lower, "catalogue") ||
-			strings.Contains(lower, "industrial estate") || strings.Contains(lower, "all rights reserved") ||
-			strings.Contains(lower, "song title") || strings.HasPrefix(lower, "artist") {
-			continue
-		}
-
-		parts := colSplitRegex.Split(trimmed, -1)
-		if len(parts) < 2 {
-			continue
-		}
-
-		var artist, title, discCode string
-
-		if len(parts) == 2 {
-			artist = strings.TrimSpace(parts[0])
-			title = strings.TrimSpace(parts[1])
-		} else if len(parts) >= 3 {
-			// Check if first or third column is a disc code
-			if discCodeRegex.MatchString(strings.TrimSpace(parts[0])) {
-				discCode = strings.TrimSpace(parts[0])
-				artist = strings.TrimSpace(parts[1])
-				title = strings.TrimSpace(parts[2])
-			} else if discCodeRegex.MatchString(strings.TrimSpace(parts[len(parts)-1])) {
-				artist = strings.TrimSpace(parts[0])
-				title = strings.TrimSpace(parts[1])
-				discCode = strings.TrimSpace(parts[len(parts)-1])
-			} else {
-				artist = strings.TrimSpace(parts[0])
-				title = strings.TrimSpace(parts[1])
-			}
-		}
-
-		if artist == "" || title == "" {
-			continue
-		}
-
-		cleanArtist := UninvertArtist(artist)
-		cleanTitle := StripNoiseTags(title)
-		id := GenerateCanonicalID(cleanArtist, cleanTitle)
-
-		provider := defaultProvider
-		if discCode != "" {
-			normDisc := NormalizeDiscCode(discCode)
-			discCode = normDisc
-			if p := ResolveProvider(normDisc, ""); p != "" {
-				provider = p
-			}
-		} else if provider == "" {
-			provider = ResolveProvider("", cleanArtist)
-		}
-
-		track := CanonicalTrack{
-			ID:       id,
-			Artist:   cleanArtist,
-			Title:    cleanTitle,
-			DiscCode: discCode,
-			Source:   provider,
-		}
-
-		if discCode != "" {
-			discMap[discCode] = track
+		if track.DiscCode != "" {
+			discMap[track.DiscCode] = track
 		}
 		tracks = append(tracks, track)
 	}
@@ -410,9 +297,29 @@ func ParseSongbookText(text, defaultProvider string) ([]CanonicalTrack, map[stri
 	return tracks, discMap, nil
 }
 
+var pdftotextCandidates = []string{
+	"/usr/bin/pdftotext",
+	"/usr/local/bin/pdftotext",
+	"/opt/homebrew/bin/pdftotext",
+}
+
+func resolvePdftotextPath() (string, error) {
+	for _, candidate := range pdftotextCandidates {
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("pdftotext binary not found in standard system paths (ensure poppler-utils is installed)")
+}
+
 // ParsePDFSongbook executes pdftotext -layout on a PDF file and parses the columnar text.
 func ParsePDFSongbook(pdfPath, defaultProvider string) ([]CanonicalTrack, map[string]CanonicalTrack, error) {
-	cmd := exec.Command("pdftotext", "-layout", pdfPath, "-")
+	binPath, err := resolvePdftotextPath()
+	if err != nil {
+		return nil, nil, err
+	}
+	cmd := exec.Command(binPath, "-layout", pdfPath, "-")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, nil, fmt.Errorf("pdftotext failed (ensure poppler-utils is installed): %w", err)
@@ -433,11 +340,7 @@ func ParseDiscMapCSV(r io.Reader) (map[string]CanonicalTrack, []CanonicalTrack, 
 		return nil, nil, fmt.Errorf("read disc header: %w", err)
 	}
 
-	colIndex := make(map[string]int)
-	for i, col := range header {
-		colIndex[strings.ToLower(strings.TrimSpace(col))] = i
-	}
-
+	colIndex := buildTrimmedCSVHeaderIndex(header)
 	discMap := make(map[string]CanonicalTrack)
 	var tracks []CanonicalTrack
 
@@ -449,58 +352,11 @@ func ParseDiscMapCSV(r io.Reader) (map[string]CanonicalTrack, []CanonicalTrack, 
 		if err != nil {
 			continue
 		}
-
-		var discCode, artist, title string
-		if idx, ok := colIndex["disc_code"]; ok && idx < len(record) {
-			discCode = strings.TrimSpace(record[idx])
-		} else if idx, ok := colIndex["disc"]; ok && idx < len(record) {
-			discCode = strings.TrimSpace(record[idx])
-			if trackIdx, ok := colIndex["track"]; ok && trackIdx < len(record) {
-				tNum := strings.TrimSpace(record[trackIdx])
-				if tNum != "" && !strings.Contains(discCode, "-") {
-					discCode = fmt.Sprintf("%s-%02s", discCode, tNum)
-				}
-			}
-		}
-
-		if idx, ok := colIndex["artist"]; ok && idx < len(record) {
-			artist = strings.TrimSpace(record[idx])
-		}
-		if idx, ok := colIndex["title"]; ok && idx < len(record) {
-			title = strings.TrimSpace(record[idx])
-		}
-
-		if discCode == "" || artist == "" || title == "" {
+		track, ok := parseDiscMapRecord(record, colIndex)
+		if !ok {
 			continue
 		}
-
-		cleanArtist := UninvertArtist(artist)
-		cleanTitle := StripNoiseTags(title)
-		id := GenerateCanonicalID(cleanArtist, cleanTitle)
-
-		normDisc := NormalizeDiscCode(discCode)
-		source := ResolveProvider(normDisc, "")
-		if idx, ok := colIndex["source"]; ok && idx < len(record) {
-			if s := strings.TrimSpace(record[idx]); s != "" {
-				source = s
-			}
-		} else if idx, ok := colIndex["provider"]; ok && idx < len(record) {
-			if s := strings.TrimSpace(record[idx]); s != "" {
-				source = s
-			}
-		}
-		if source == "" {
-			source = "disc_map"
-		}
-		track := CanonicalTrack{
-			ID:       id,
-			Artist:   cleanArtist,
-			Title:    cleanTitle,
-			DiscCode: normDisc,
-			Source:   source,
-		}
-
-		discMap[normDisc] = track
+		discMap[track.DiscCode] = track
 		tracks = append(tracks, track)
 	}
 
@@ -553,32 +409,11 @@ func CompileDictionary(tracks []CanonicalTrack) ([]byte, error) {
 
 // EnrichDiscMap enriches disc mappings with metadata (Genre, Year) from canonical tracks.
 func EnrichDiscMap(discMap map[string]CanonicalTrack, dictTracks []CanonicalTrack) {
-	dictIndex := make(map[string]CanonicalTrack, len(dictTracks))
-	for _, t := range dictTracks {
-		key := CompositeKey(t.Artist, t.Title)
-		if existing, ok := dictIndex[key]; ok {
-			if existing.Genre == "" && t.Genre != "" {
-				existing.Genre = t.Genre
-			}
-			if existing.Year == 0 && t.Year != 0 {
-				existing.Year = t.Year
-			}
-			dictIndex[key] = existing
-		} else {
-			dictIndex[key] = t
-		}
-	}
-
+	dictIndex := buildDictTrackIndex(dictTracks)
 	for k, disc := range discMap {
 		key := CompositeKey(disc.Artist, disc.Title)
 		if match, ok := dictIndex[key]; ok {
-			if disc.Genre == "" && match.Genre != "" {
-				disc.Genre = match.Genre
-			}
-			if disc.Year == 0 && match.Year != 0 {
-				disc.Year = match.Year
-			}
-			discMap[k] = disc
+			discMap[k] = mergeTrackMetadata(disc, match)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -100,33 +101,17 @@ func (s *Store) CreateSongbook(ctx context.Context, sb *models.Songbook) error {
 		return fmt.Errorf("create songbook: owner is required: %w", os.ErrInvalid)
 	}
 	now := s.currentTime()
-	if sb.CreatedAt.IsZero() {
-		sb.CreatedAt = now
-	} else {
-		sb.CreatedAt = sb.CreatedAt.UTC()
-	}
-	if sb.UpdatedAt.IsZero() {
-		sb.UpdatedAt = now
-	} else {
-		sb.UpdatedAt = sb.UpdatedAt.UTC()
-	}
+	sb.CreatedAt = normalizeTimestamp(sb.CreatedAt, now)
+	sb.UpdatedAt = normalizeTimestamp(sb.UpdatedAt, now)
 
 	normSlug := models.NormalizeSlug(sb.Slug)
 
 	return s.withTx(ctx, func(tx pgx.Tx) error {
-		var ownerDeleting bool
-		err := tx.QueryRow(ctx, `SELECT deleting FROM users WHERE id = $1 FOR UPDATE`, sb.OwnerID).Scan(&ownerDeleting)
-		if isNotFound(err) {
-			return os.ErrNotExist
-		}
-		if err != nil {
-			return fmt.Errorf("create songbook check owner: %w", err)
-		}
-		if ownerDeleting {
-			return store.ErrAccountDeleting
+		if err := ensureSongbookOwnerActive(ctx, tx, sb.OwnerID); err != nil {
+			return err
 		}
 
-		_, err = tx.Exec(ctx, `
+		_, err := tx.Exec(ctx, `
 			INSERT INTO songbooks (
 				id, owner_id, public_id, slug, venue_id, catalog_version_id,
 				name, is_public, song_count, catalog_generation,
@@ -147,26 +132,52 @@ func (s *Store) CreateSongbook(ctx context.Context, sb *models.Songbook) error {
 			sb.CreatedAt,
 			sb.UpdatedAt,
 		)
-		if err != nil {
-			if isUniqueViolation(err) {
-				switch pgConstraintName(err) {
-				case "songbooks_pkey":
-					return os.ErrExist
-				case "idx_songbooks_public_id":
-					return fmt.Errorf("create songbook: public_id already exists: %w", os.ErrExist)
-				case "idx_songbooks_slug":
-					return fmt.Errorf("create songbook: slug already exists: %w", os.ErrExist)
-				default:
-					return fmt.Errorf("create songbook: %w", os.ErrExist)
-				}
-			}
-			if isForeignKeyViolation(err) {
-				return fmt.Errorf("create songbook: %w", os.ErrNotExist)
-			}
-			return fmt.Errorf("create songbook: %w", err)
-		}
-		return nil
+		return mapCreateSongbookError(err)
 	})
+}
+
+func normalizeTimestamp(t, fallback time.Time) time.Time {
+	if t.IsZero() {
+		return fallback
+	}
+	return t.UTC()
+}
+
+func ensureSongbookOwnerActive(ctx context.Context, tx pgx.Tx, ownerID string) error {
+	var ownerDeleting bool
+	err := tx.QueryRow(ctx, `SELECT deleting FROM users WHERE id = $1 FOR UPDATE`, ownerID).Scan(&ownerDeleting)
+	if isNotFound(err) {
+		return os.ErrNotExist
+	}
+	if err != nil {
+		return fmt.Errorf("create songbook check owner: %w", err)
+	}
+	if ownerDeleting {
+		return store.ErrAccountDeleting
+	}
+	return nil
+}
+
+func mapCreateSongbookError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isUniqueViolation(err) {
+		switch pgConstraintName(err) {
+		case "songbooks_pkey":
+			return os.ErrExist
+		case "idx_songbooks_public_id":
+			return fmt.Errorf("create songbook: public_id already exists: %w", os.ErrExist)
+		case "idx_songbooks_slug":
+			return fmt.Errorf("create songbook: slug already exists: %w", os.ErrExist)
+		default:
+			return fmt.Errorf("create songbook: %w", os.ErrExist)
+		}
+	}
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("create songbook: %w", os.ErrNotExist)
+	}
+	return fmt.Errorf("create songbook: %w", err)
 }
 
 // UpdateSongbook changes owner-editable metadata without replacing sync state.

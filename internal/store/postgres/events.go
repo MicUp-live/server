@@ -103,25 +103,33 @@ func (s *Store) getEventWhere(ctx context.Context, where string, arg any) (*mode
 	return ev, nil
 }
 
-// CreateEvent persists a new karaoke event with atomic owner and host-fence checks.
-func (s *Store) CreateEvent(ctx context.Context, ev *models.Event) error {
-	if ev == nil || strings.TrimSpace(ev.OwnerID) == "" {
-		return fmt.Errorf("create event: owner is required: %w", os.ErrInvalid)
-	}
+type createEventParams struct {
+	id              string
+	created         time.Time
+	updated         time.Time
+	status          models.EventStatus
+	rotationMode    string
+	submissionDelay int
+	currentRound    int
+	queueVersion    int64
+	maxActive       int
+	openKJKey       string
+	joinCode        string
+	weights         map[string]int
+	weightsJSON     []byte
+}
 
+func prepareCreateEventParams(ev *models.Event, now time.Time) (createEventParams, error) {
 	id := ev.ID
 	if id == "" {
 		id = uuid.NewString()
 	}
-	now := s.currentTime()
 	created := ev.CreatedAt
 	if created.IsZero() {
 		created = now
 	} else {
 		created = created.UTC()
 	}
-	updated := now
-
 	status := ev.Status
 	if status == "" {
 		status = models.EventStatusActive
@@ -130,7 +138,6 @@ func (s *Store) CreateEvent(ctx context.Context, ev *models.Event) error {
 	if rotationMode == "" {
 		rotationMode = models.RotationModeRoundRobin
 	}
-	submissionDelay := max(0, ev.SubmissionDelay)
 	currentRound := ev.CurrentRound
 	if currentRound <= 0 {
 		currentRound = 1
@@ -139,12 +146,10 @@ func (s *Store) CreateEvent(ctx context.Context, ev *models.Event) error {
 	if queueVersion <= 0 {
 		queueVersion = 1
 	}
-	maxActive := max(0, ev.MaxActivePerSinger)
 	openKJKey := ev.OpenKJKey
 	if openKJKey == "" {
 		openKJKey = models.GenerateOpenKJKey(id)
 	}
-	joinCode := strings.ToUpper(strings.TrimSpace(ev.JoinCode))
 	weights := models.NormalizeSingerWeights(ev.SingerWeights)
 	weightsToMarshal := weights
 	if weightsToMarshal == nil {
@@ -152,75 +157,114 @@ func (s *Store) CreateEvent(ctx context.Context, ev *models.Event) error {
 	}
 	weightsJSON, err := marshalJSON(weightsToMarshal)
 	if err != nil {
-		return fmt.Errorf("create event: marshal singer weights: %w", err)
+		return createEventParams{}, fmt.Errorf("create event: marshal singer weights: %w", err)
+	}
+	return createEventParams{
+		id:              id,
+		created:         created,
+		updated:         now,
+		status:          status,
+		rotationMode:    rotationMode,
+		submissionDelay: max(0, ev.SubmissionDelay),
+		currentRound:    currentRound,
+		queueVersion:    queueVersion,
+		maxActive:       max(0, ev.MaxActivePerSinger),
+		openKJKey:       openKJKey,
+		joinCode:        strings.ToUpper(strings.TrimSpace(ev.JoinCode)),
+		weights:         weights,
+		weightsJSON:     weightsJSON,
+	}, nil
+}
+
+func mapCreateEventInsertError(err error) error {
+	if isUniqueViolation(err) {
+		switch pgConstraintName(err) {
+		case "events_pkey":
+			return os.ErrExist
+		case "idx_events_join_code":
+			return fmt.Errorf("create event: join code conflict: %w", os.ErrExist)
+		default:
+			return fmt.Errorf("create event: %w", os.ErrExist)
+		}
+	}
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("create event: %w", os.ErrNotExist)
+	}
+	return fmt.Errorf("create event: %w", err)
+}
+
+func insertEventTx(ctx context.Context, tx pgx.Tx, ev *models.Event, p createEventParams) error {
+	if err := checkSongbookHostFence(ctx, tx); err != nil {
+		return err
+	}
+	var userDeleting bool
+	if err := tx.QueryRow(ctx, `SELECT deleting FROM users WHERE id = $1 FOR UPDATE`, ev.OwnerID).Scan(&userDeleting); err != nil {
+		if isNotFound(err) {
+			return os.ErrNotExist
+		}
+		return fmt.Errorf("create event: check owner: %w", err)
+	}
+	if userDeleting {
+		return store.ErrAccountDeleting
+	}
+
+	_, err := tx.Exec(ctx, `
+		INSERT INTO events (
+			id, owner_id, songbook_id, detached_songbook_name, venue_name, name, join_code,
+			status, recurring, tip_url, announcement, kiosk_pin, rotation_mode, current_round,
+			auto_accept, submission_delay, max_active_per_singer, allow_key_change, allow_write_ins,
+			allow_song_replacement, singer_weights, queue_version, metadata_version, restarting, detaching,
+			pending_detach_expires_at, deleting, openkj_key, created_at, updated_at, ended_at, expires_at
+		) VALUES (
+			$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+			$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
+		)`,
+		p.id, ev.OwnerID, nullString(ev.SongbookID), strings.TrimSpace(ev.DetachedSongbookName), ev.VenueName, ev.Name, p.joinCode,
+		string(p.status), ev.Recurring, ev.TipURL, ev.Announcement, ev.KioskPIN, p.rotationMode, p.currentRound,
+		ev.AutoAccept, p.submissionDelay, p.maxActive, ev.AllowKeyChange, ev.AllowWriteIns,
+		ev.AllowSongReplacement, p.weightsJSON, p.queueVersion, ev.MetadataVersion, ev.Restarting, ev.Detaching,
+		unixToNullTime(ev.PendingDetachTTL), ev.Deleting, p.openKJKey, p.created, p.updated, nullTimePtr(ev.EndedAt), unixToNullTime(ev.TTL),
+	)
+	if err != nil {
+		return mapCreateEventInsertError(err)
+	}
+	return nil
+}
+
+func applyCreatedEventParams(ev *models.Event, p createEventParams) {
+	ev.ID = p.id
+	ev.CreatedAt = p.created
+	ev.UpdatedAt = p.updated
+	ev.Status = p.status
+	ev.RotationMode = p.rotationMode
+	ev.SubmissionDelay = p.submissionDelay
+	ev.CurrentRound = p.currentRound
+	ev.QueueVersion = p.queueVersion
+	ev.MaxActivePerSinger = p.maxActive
+	ev.OpenKJKey = p.openKJKey
+	ev.JoinCode = p.joinCode
+	ev.SingerWeights = p.weights
+}
+
+// CreateEvent persists a new karaoke event with atomic owner and host-fence checks.
+func (s *Store) CreateEvent(ctx context.Context, ev *models.Event) error {
+	if ev == nil || strings.TrimSpace(ev.OwnerID) == "" {
+		return fmt.Errorf("create event: owner is required: %w", os.ErrInvalid)
+	}
+
+	p, err := prepareCreateEventParams(ev, s.currentTime())
+	if err != nil {
+		return err
 	}
 
 	err = s.withTx(ctx, func(tx pgx.Tx) error {
-		if err := checkSongbookHostFence(ctx, tx); err != nil {
-			return err
-		}
-		var userDeleting bool
-		if err := tx.QueryRow(ctx, `SELECT deleting FROM users WHERE id = $1 FOR UPDATE`, ev.OwnerID).Scan(&userDeleting); err != nil {
-			if isNotFound(err) {
-				return os.ErrNotExist
-			}
-			return fmt.Errorf("create event: check owner: %w", err)
-		}
-		if userDeleting {
-			return store.ErrAccountDeleting
-		}
-
-		_, err := tx.Exec(ctx, `
-			INSERT INTO events (
-				id, owner_id, songbook_id, detached_songbook_name, venue_name, name, join_code,
-				status, recurring, tip_url, announcement, kiosk_pin, rotation_mode, current_round,
-				auto_accept, submission_delay, max_active_per_singer, allow_key_change, allow_write_ins,
-				allow_song_replacement, singer_weights, queue_version, metadata_version, restarting, detaching,
-				pending_detach_expires_at, deleting, openkj_key, created_at, updated_at, ended_at, expires_at
-			) VALUES (
-				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-				$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
-			)`,
-			id, ev.OwnerID, nullString(ev.SongbookID), strings.TrimSpace(ev.DetachedSongbookName), ev.VenueName, ev.Name, joinCode,
-			string(status), ev.Recurring, ev.TipURL, ev.Announcement, ev.KioskPIN, rotationMode, currentRound,
-			ev.AutoAccept, submissionDelay, maxActive, ev.AllowKeyChange, ev.AllowWriteIns,
-			ev.AllowSongReplacement, weightsJSON, queueVersion, ev.MetadataVersion, ev.Restarting, ev.Detaching,
-			unixToNullTime(ev.PendingDetachTTL), ev.Deleting, openKJKey, created, updated, nullTimePtr(ev.EndedAt), unixToNullTime(ev.TTL),
-		)
-		if err != nil {
-			if isUniqueViolation(err) {
-				switch pgConstraintName(err) {
-				case "events_pkey":
-					return os.ErrExist
-				case "idx_events_join_code":
-					return fmt.Errorf("create event: join code conflict: %w", os.ErrExist)
-				default:
-					return fmt.Errorf("create event: %w", os.ErrExist)
-				}
-			}
-			if isForeignKeyViolation(err) {
-				return fmt.Errorf("create event: %w", os.ErrNotExist)
-			}
-			return fmt.Errorf("create event: %w", err)
-		}
-		return nil
+		return insertEventTx(ctx, tx, ev, p)
 	})
 	if err != nil {
 		return err
 	}
 
-	ev.ID = id
-	ev.CreatedAt = created
-	ev.UpdatedAt = updated
-	ev.Status = status
-	ev.RotationMode = rotationMode
-	ev.SubmissionDelay = submissionDelay
-	ev.CurrentRound = currentRound
-	ev.QueueVersion = queueVersion
-	ev.MaxActivePerSinger = maxActive
-	ev.OpenKJKey = openKJKey
-	ev.JoinCode = joinCode
-	ev.SingerWeights = weights
+	applyCreatedEventParams(ev, p)
 	return nil
 }
 
@@ -436,6 +480,20 @@ func (s *Store) TransitionQueueRotation(ctx context.Context, ev *models.Event, r
 	return nil
 }
 
+func classifyBumpQueueVersionNotFound(ctx context.Context, tx pgx.Tx, eventID string) error {
+	var deleting, restarting bool
+	if err := tx.QueryRow(ctx, `SELECT deleting, restarting FROM events WHERE id = $1`, eventID).Scan(&deleting, &restarting); err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("bump queue version for event %s: %w", eventID, os.ErrNotExist)
+		}
+		return fmt.Errorf("bump queue version for event %s: %w", eventID, err)
+	}
+	if deleting {
+		return fmt.Errorf("bump queue version for event %s: %w", eventID, store.ErrEventDeleting)
+	}
+	return fmt.Errorf("bump queue version for event %s: %w", eventID, store.ErrAdmissionConflict)
+}
+
 // BumpQueueVersion atomically marks an event's public queue snapshot stale.
 func (s *Store) BumpQueueVersion(ctx context.Context, eventID string) (int64, error) {
 	var newVersion int64
@@ -445,23 +503,13 @@ func (s *Store) BumpQueueVersion(ctx context.Context, eventID string) (int64, er
 			UPDATE events SET queue_version = queue_version + 1, updated_at = $1
 			WHERE id = $2 AND restarting = FALSE AND deleting = FALSE
 			RETURNING queue_version`, now, eventID).Scan(&newVersion)
-		if err != nil {
-			if isNotFound(err) {
-				var deleting, restarting bool
-				if rErr := tx.QueryRow(ctx, `SELECT deleting, restarting FROM events WHERE id = $1`, eventID).Scan(&deleting, &restarting); rErr != nil {
-					if isNotFound(rErr) {
-						return fmt.Errorf("bump queue version for event %s: %w", eventID, os.ErrNotExist)
-					}
-					return fmt.Errorf("bump queue version for event %s: %w", eventID, rErr)
-				}
-				if deleting {
-					return fmt.Errorf("bump queue version for event %s: %w", eventID, store.ErrEventDeleting)
-				}
-				return fmt.Errorf("bump queue version for event %s: %w", eventID, store.ErrAdmissionConflict)
-			}
-			return fmt.Errorf("bump queue version for event %s: %w", eventID, err)
+		if err == nil {
+			return nil
 		}
-		return nil
+		if isNotFound(err) {
+			return classifyBumpQueueVersionNotFound(ctx, tx, eventID)
+		}
+		return fmt.Errorf("bump queue version for event %s: %w", eventID, err)
 	})
 	if err != nil {
 		return 0, err

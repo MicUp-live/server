@@ -124,45 +124,26 @@ func processRecord(ctx context.Context, recordBody string, db store.ImportJobSto
 		return err
 	}
 	status, err := db.ClaimImportJobProcessing(ctx, job.ID)
-	if errors.Is(err, store.ErrImportJobAlreadyCompleted) {
-		// Completed-job redelivery is an idempotent no-op.
-		return nil
-	}
-	if errors.Is(err, store.ErrImportJobTerminal) {
-		// Terminal failed job cannot resume.
+	if isImportJobFinishedErr(err) {
+		// Completed-job redelivery is an idempotent no-op; terminal failed jobs cannot resume.
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("claim import job %s processing: %w", job.ID, err)
 	}
 
-	obj, err := s3c.GetObject(ctx, &s3.GetObjectInput{Bucket: &bucket, Key: &job.ManifestKey})
-	if err != nil {
-		// If S3 returns an error (e.g. manifest deleted because job completed concurrently or previously),
-		// reload receipt to check if the job was completed or terminal.
-		latest, getErr := db.GetImportJob(ctx, job.ID)
-		if getErr == nil && latest != nil && (latest.Status == models.ImportJobCompleted || latest.Status == models.ImportJobFailed) {
-			return nil
-		}
-		return err
-	}
-	body, err := io.ReadAll(obj.Body)
-	obj.Body.Close()
+	m, ok, err := loadManifest(ctx, db, s3c, bucket, job)
 	if err != nil {
 		return err
 	}
-	var m manifest
-	if err := json.Unmarshal(body, &m); err != nil {
-		return err
+	if !ok {
+		return nil
 	}
 	// Canonical tracks stay in the source manifest and are compiled directly
 	// by the catalog worker; avoid one DynamoDB write per imported song.
 	status.ProcessedSongs = len(m.Songs)
 	if updateErr := db.UpdateImportJobProgress(ctx, job.ID, len(m.Songs)); updateErr != nil {
-		if errors.Is(updateErr, store.ErrImportJobAlreadyCompleted) {
-			return nil
-		}
-		if errors.Is(updateErr, store.ErrImportJobTerminal) {
+		if isImportJobFinishedErr(updateErr) {
 			return nil
 		}
 		return fmt.Errorf("update import job %s progress: %w", job.ID, updateErr)
@@ -171,37 +152,68 @@ func processRecord(ctx context.Context, recordBody string, db store.ImportJobSto
 	if m.PruneMissing != nil {
 		pruneMissing = *m.PruneMissing
 	}
-	gen := status.Generation
-	if gen == 0 && job.Generation > 0 {
-		gen = job.Generation
-	}
-	if gen == 0 {
-		latestJob, getErr := db.GetImportJob(ctx, job.ID)
-		if getErr != nil {
-			return fmt.Errorf("load import job %s: %w", job.ID, getErr)
-		}
-		if latestJob.Generation > 0 {
-			gen = latestJob.Generation
-			status.Generation = gen
-		} else {
-			type generationAllocator interface {
-				NextCatalogGeneration(ctx context.Context, songbookID string) (int64, error)
-			}
-			if allocator, ok := db.(generationAllocator); ok {
-				allocatedGen, allocErr := allocator.NextCatalogGeneration(ctx, status.SongbookID)
-				if allocErr != nil {
-					return fmt.Errorf("allocate legacy catalog generation: %w", allocErr)
-				}
-				assignedGen, assignErr := db.AssignImportJobGeneration(ctx, job.ID, allocatedGen)
-				if assignErr != nil {
-					return fmt.Errorf("persist legacy catalog generation: %w", assignErr)
-				}
-				gen = assignedGen
-				status.Generation = gen
-			} else {
-				return fmt.Errorf("cannot process legacy import %s without durable generation assignment", job.ID)
-			}
-		}
+	gen, err := resolveCatalogGeneration(ctx, db, job, status.Generation, status.SongbookID)
+	if err != nil {
+		return err
 	}
 	return jobs.Enqueue(ctx, catalog.BuildJob{SongbookID: status.SongbookID, ManifestKey: job.ManifestKey, PruneMissing: pruneMissing, JobGeneration: gen})
+}
+
+func isImportJobFinishedErr(err error) bool {
+	return errors.Is(err, store.ErrImportJobAlreadyCompleted) || errors.Is(err, store.ErrImportJobTerminal)
+}
+
+func loadManifest(ctx context.Context, db store.ImportJobStore, s3c s3ManifestReader, bucket string, job importjob.Job) (manifest, bool, error) {
+	obj, err := s3c.GetObject(ctx, &s3.GetObjectInput{Bucket: &bucket, Key: &job.ManifestKey})
+	if err != nil {
+		// If S3 returns an error (e.g. manifest deleted because job completed concurrently or previously),
+		// reload receipt to check if the job was completed or terminal.
+		latest, getErr := db.GetImportJob(ctx, job.ID)
+		if getErr == nil && latest != nil && (latest.Status == models.ImportJobCompleted || latest.Status == models.ImportJobFailed) {
+			return manifest{}, false, nil
+		}
+		return manifest{}, false, err
+	}
+	body, err := io.ReadAll(obj.Body)
+	obj.Body.Close()
+	if err != nil {
+		return manifest{}, false, err
+	}
+	var m manifest
+	if err := json.Unmarshal(body, &m); err != nil {
+		return manifest{}, false, err
+	}
+	return m, true, nil
+}
+
+func resolveCatalogGeneration(ctx context.Context, db store.ImportJobStore, job importjob.Job, statusGen int64, songbookID string) (int64, error) {
+	if statusGen != 0 {
+		return statusGen, nil
+	}
+	if job.Generation > 0 {
+		return job.Generation, nil
+	}
+	latestJob, getErr := db.GetImportJob(ctx, job.ID)
+	if getErr != nil {
+		return 0, fmt.Errorf("load import job %s: %w", job.ID, getErr)
+	}
+	if latestJob.Generation > 0 {
+		return latestJob.Generation, nil
+	}
+	type generationAllocator interface {
+		NextCatalogGeneration(ctx context.Context, songbookID string) (int64, error)
+	}
+	allocator, ok := db.(generationAllocator)
+	if !ok {
+		return 0, fmt.Errorf("cannot process legacy import %s without durable generation assignment", job.ID)
+	}
+	allocatedGen, allocErr := allocator.NextCatalogGeneration(ctx, songbookID)
+	if allocErr != nil {
+		return 0, fmt.Errorf("allocate legacy catalog generation: %w", allocErr)
+	}
+	assignedGen, assignErr := db.AssignImportJobGeneration(ctx, job.ID, allocatedGen)
+	if assignErr != nil {
+		return 0, fmt.Errorf("persist legacy catalog generation: %w", assignErr)
+	}
+	return assignedGen, nil
 }

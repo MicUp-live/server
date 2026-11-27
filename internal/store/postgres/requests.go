@@ -99,6 +99,41 @@ func insertRequestTx(ctx context.Context, tx pgx.Tx, req *models.SongRequest, id
 	return err
 }
 
+func verifyEventAcceptingRequestsTx(ctx context.Context, tx pgx.Tx, eventID string) error {
+	var evStatus string
+	var restarting, deleting bool
+	err := tx.QueryRow(ctx, `SELECT status, restarting, deleting FROM events WHERE id = $1 FOR UPDATE`, eventID).Scan(&evStatus, &restarting, &deleting)
+	if err != nil {
+		if isNotFound(err) {
+			return fmt.Errorf("create song request: %w", os.ErrNotExist)
+		}
+		return fmt.Errorf("create song request: %w", err)
+	}
+	if deleting {
+		return fmt.Errorf("create song request: %w", store.ErrEventDeleting)
+	}
+	if evStatus != string(models.EventStatusActive) {
+		return fmt.Errorf("create song request: %w", store.ErrEventNotActive)
+	}
+	if restarting {
+		return fmt.Errorf("create song request: %w", store.ErrAdmissionConflict)
+	}
+	return nil
+}
+
+func classifyCreateRequestInsertError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isUniqueViolation(err) {
+		return fmt.Errorf("create song request: %w", os.ErrExist)
+	}
+	if isForeignKeyViolation(err) {
+		return fmt.Errorf("create song request: %w", os.ErrNotExist)
+	}
+	return fmt.Errorf("create song request: %w", err)
+}
+
 // CreateRequest inserts a song request after confirming the event is active and not deleting/restarting.
 func (s *Store) CreateRequest(ctx context.Context, req *models.SongRequest) error {
 	if req == nil || req.EventID == "" {
@@ -107,35 +142,10 @@ func (s *Store) CreateRequest(ctx context.Context, req *models.SongRequest) erro
 
 	id, created, updated, status, rank := prepareNewRequestDefaults(req, s.currentTime())
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
-		var evStatus string
-		var restarting, deleting bool
-		err := tx.QueryRow(ctx, `SELECT status, restarting, deleting FROM events WHERE id = $1 FOR UPDATE`, req.EventID).Scan(&evStatus, &restarting, &deleting)
-		if err != nil {
-			if isNotFound(err) {
-				return fmt.Errorf("create song request: %w", os.ErrNotExist)
-			}
-			return fmt.Errorf("create song request: %w", err)
+		if err := verifyEventAcceptingRequestsTx(ctx, tx, req.EventID); err != nil {
+			return err
 		}
-		if deleting {
-			return fmt.Errorf("create song request: %w", store.ErrEventDeleting)
-		}
-		if evStatus != string(models.EventStatusActive) {
-			return fmt.Errorf("create song request: %w", store.ErrEventNotActive)
-		}
-		if restarting {
-			return fmt.Errorf("create song request: %w", store.ErrAdmissionConflict)
-		}
-
-		if err := insertRequestTx(ctx, tx, req, id, status, rank, created, updated); err != nil {
-			if isUniqueViolation(err) {
-				return fmt.Errorf("create song request: %w", os.ErrExist)
-			}
-			if isForeignKeyViolation(err) {
-				return fmt.Errorf("create song request: %w", os.ErrNotExist)
-			}
-			return fmt.Errorf("create song request: %w", err)
-		}
-		return nil
+		return classifyCreateRequestInsertError(insertRequestTx(ctx, tx, req, id, status, rank, created, updated))
 	})
 	if err != nil {
 		return err
@@ -168,6 +178,45 @@ func countActiveSingerRequestsTx(ctx context.Context, tx pgx.Tx, eventID, normSi
 	return activeCount, nil
 }
 
+func bumpExpectedEventVersionTx(ctx context.Context, tx pgx.Tx, eventID string, expectedVersion int64, updated time.Time) error {
+	tag, err := tx.Exec(ctx, `
+		UPDATE events SET queue_version = queue_version + 1, updated_at = $1
+		WHERE id = $2 AND status = $3 AND restarting = FALSE AND deleting = FALSE AND queue_version = $4`,
+		updated, eventID, string(models.EventStatusActive), expectedVersion,
+	)
+	if err != nil {
+		return fmt.Errorf("commit request event version: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return classifyEventMutationError(ctx, tx, eventID, &expectedVersion, true)
+	}
+	return nil
+}
+
+func enforceSingerActiveLimitTx(ctx context.Context, tx pgx.Tx, eventID, normSinger string, maxActivePerSinger int) error {
+	if maxActivePerSinger <= 0 || normSinger == "" {
+		return nil
+	}
+	activeCount, err := countActiveSingerRequestsTx(ctx, tx, eventID, normSinger)
+	if err != nil {
+		return err
+	}
+	if activeCount >= maxActivePerSinger {
+		return store.ErrSingerLimitExceeded
+	}
+	return nil
+}
+
+func classifyAdmissionInsertError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isUniqueViolation(err) {
+		return store.ErrAdmissionConflict
+	}
+	return fmt.Errorf("commit request insert: %w", err)
+}
+
 // CreateRequestAtVersion commits a complete admission plan against expectedVersion.
 func (s *Store) CreateRequestAtVersion(ctx context.Context, req *models.SongRequest, maxActivePerSinger int, reorderIDs []string, expectedVersion int64) error {
 	if req == nil || req.EventID == "" || expectedVersion < 0 {
@@ -181,33 +230,14 @@ func (s *Store) CreateRequestAtVersion(ctx context.Context, req *models.SongRequ
 	id, created, updated, status, rank := prepareNewRequestDefaults(req, s.currentTime())
 
 	err := s.withTx(ctx, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			UPDATE events SET queue_version = queue_version + 1, updated_at = $1
-			WHERE id = $2 AND status = $3 AND restarting = FALSE AND deleting = FALSE AND queue_version = $4`,
-			updated, req.EventID, string(models.EventStatusActive), expectedVersion,
-		)
-		if err != nil {
-			return fmt.Errorf("commit request event version: %w", err)
+		if err := bumpExpectedEventVersionTx(ctx, tx, req.EventID, expectedVersion, updated); err != nil {
+			return err
 		}
-		if tag.RowsAffected() == 0 {
-			return classifyEventMutationError(ctx, tx, req.EventID, &expectedVersion, true)
+		if err := enforceSingerActiveLimitTx(ctx, tx, req.EventID, normSinger, maxActivePerSinger); err != nil {
+			return err
 		}
-
-		if maxActivePerSinger > 0 && normSinger != "" {
-			activeCount, err := countActiveSingerRequestsTx(ctx, tx, req.EventID, normSinger)
-			if err != nil {
-				return err
-			}
-			if activeCount >= maxActivePerSinger {
-				return store.ErrSingerLimitExceeded
-			}
-		}
-
-		if err := insertRequestTx(ctx, tx, req, id, status, rank, created, updated); err != nil {
-			if isUniqueViolation(err) {
-				return store.ErrAdmissionConflict
-			}
-			return fmt.Errorf("commit request insert: %w", err)
+		if err := classifyAdmissionInsertError(insertRequestTx(ctx, tx, req, id, status, rank, created, updated)); err != nil {
+			return err
 		}
 		if len(reorderIDs) > 0 {
 			return applyReorderUpdatesTx(ctx, tx, req.EventID, reorderIDs, id, updated)
@@ -423,40 +453,56 @@ func (s *Store) DeleteRequest(ctx context.Context, id string) error {
 	return s.deleteRequest(ctx, id, "", false)
 }
 
+func notFoundForDelete(enforceEventScope bool) error {
+	if enforceEventScope {
+		return os.ErrNotExist
+	}
+	return nil
+}
+
+func loadRequestEventIDForDeleteTx(ctx context.Context, tx pgx.Tx, id, expectedEventID string, enforceEventScope bool) (string, bool, error) {
+	var reqEventID string
+	err := tx.QueryRow(ctx, `SELECT event_id FROM event_requests WHERE id = $1`, id).Scan(&reqEventID)
+	if isNotFound(err) {
+		return "", false, notFoundForDelete(enforceEventScope)
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("load song request for delete: %w", err)
+	}
+	if enforceEventScope && reqEventID != expectedEventID {
+		return "", false, os.ErrNotExist
+	}
+	return reqEventID, true, nil
+}
+
+func bumpEventVersionOnRequestDeleteTx(ctx context.Context, tx pgx.Tx, reqEventID string, enforceEventScope bool, now time.Time) error {
+	if enforceEventScope {
+		_, err := bumpEventVersionForMutationTx(ctx, tx, reqEventID, nil, now)
+		return err
+	}
+	if reqEventID == "" {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `UPDATE events SET queue_version = queue_version + 1, updated_at = $1 WHERE id = $2`, now, reqEventID); err != nil {
+		return fmt.Errorf("bump event version on request delete: %w", err)
+	}
+	return nil
+}
+
 func (s *Store) deleteRequest(ctx context.Context, id, expectedEventID string, enforceEventScope bool) error {
 	if strings.HasPrefix(id, "slot#") {
 		return nil
 	}
 	if id == "" {
-		if enforceEventScope {
-			return os.ErrNotExist
-		}
-		return nil
+		return notFoundForDelete(enforceEventScope)
 	}
 	return s.withTx(ctx, func(tx pgx.Tx) error {
-		var reqEventID string
-		err := tx.QueryRow(ctx, `SELECT event_id FROM event_requests WHERE id = $1`, id).Scan(&reqEventID)
-		if err != nil {
-			if isNotFound(err) {
-				if enforceEventScope {
-					return os.ErrNotExist
-				}
-				return nil
-			}
-			return fmt.Errorf("load song request for delete: %w", err)
+		reqEventID, found, err := loadRequestEventIDForDeleteTx(ctx, tx, id, expectedEventID, enforceEventScope)
+		if err != nil || !found {
+			return err
 		}
-		if enforceEventScope && reqEventID != expectedEventID {
-			return os.ErrNotExist
-		}
-		now := s.currentTime()
-		if enforceEventScope {
-			if _, err := bumpEventVersionForMutationTx(ctx, tx, reqEventID, nil, now); err != nil {
-				return err
-			}
-		} else if reqEventID != "" {
-			if _, err := tx.Exec(ctx, `UPDATE events SET queue_version = queue_version + 1, updated_at = $1 WHERE id = $2`, now, reqEventID); err != nil {
-				return fmt.Errorf("bump event version on request delete: %w", err)
-			}
+		if err := bumpEventVersionOnRequestDeleteTx(ctx, tx, reqEventID, enforceEventScope, s.currentTime()); err != nil {
+			return err
 		}
 		tag, err := tx.Exec(ctx, `DELETE FROM event_requests WHERE id = $1`, id)
 		if err != nil {

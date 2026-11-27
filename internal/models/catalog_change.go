@@ -29,26 +29,46 @@ func latestClearTimestamp(changes []*CatalogChange) (bool, time.Time) {
 	return hasClear, latestClearAt
 }
 
+func indexBaseSongs(base []*Song) map[string]*Song {
+	byID := make(map[string]*Song, len(base))
+	for _, song := range base {
+		if song != nil {
+			byID[song.ID] = song
+		}
+	}
+	return byID
+}
+
+func isSurvivingChange(change *CatalogChange, hasClear bool, latestClearAt time.Time) bool {
+	if change == nil || change.Clear {
+		return false
+	}
+	if hasClear && !latestClearAt.IsZero() && !change.UpdatedAt.After(latestClearAt) {
+		return false
+	}
+	return true
+}
+
+func isApplicableSongChange(change *CatalogChange, songID string, hasClear bool, latestClearAt time.Time) bool {
+	if !isSurvivingChange(change, hasClear, latestClearAt) || change.SongID != songID {
+		return false
+	}
+	return change.Deleted || change.Song != nil
+}
+
 // ApplyCatalogChanges replays pending catalog overrides onto base songs in a
 // timestamp-safe manner so Clear markers never depend on query or map order.
 func ApplyCatalogChanges(base []*Song, changes []*CatalogChange) map[string]*Song {
 	hasClear, latestClearAt := latestClearTimestamp(changes)
 
-	byID := make(map[string]*Song, len(base))
+	byID := make(map[string]*Song)
 	if !hasClear {
-		for _, song := range base {
-			if song != nil {
-				byID[song.ID] = song
-			}
-		}
+		byID = indexBaseSongs(base)
 	}
 
 	surviving := make([]*CatalogChange, 0, len(changes))
 	for _, change := range changes {
-		if change == nil || change.Clear {
-			continue
-		}
-		if hasClear && !latestClearAt.IsZero() && !change.UpdatedAt.After(latestClearAt) {
+		if !isSurvivingChange(change, hasClear, latestClearAt) {
 			continue
 		}
 		surviving = append(surviving, change)
@@ -75,27 +95,18 @@ func ResolveCatalogChange(changes []*CatalogChange, songID string) (*Song, bool)
 
 	var matched *CatalogChange
 	for _, change := range changes {
-		if change == nil || change.Clear || change.SongID != songID {
-			continue
-		}
-		if !change.Deleted && change.Song == nil {
-			continue
-		}
-		if hasClear && !latestClearAt.IsZero() && !change.UpdatedAt.After(latestClearAt) {
+		if !isApplicableSongChange(change, songID, hasClear, latestClearAt) {
 			continue
 		}
 		if matched == nil || !change.UpdatedAt.Before(matched.UpdatedAt) {
 			matched = change
 		}
 	}
-	if matched != nil {
-		if matched.Deleted || matched.Song == nil {
-			return nil, true
-		}
-		return matched.Song, true
+	if matched == nil {
+		return nil, hasClear
 	}
-	if hasClear {
+	if matched.Deleted || matched.Song == nil {
 		return nil, true
 	}
-	return nil, false
+	return matched.Song, true
 }

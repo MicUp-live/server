@@ -199,69 +199,81 @@ func (h *AuthHandler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	updatedUser := *user
-	if req.DisplayName != nil {
-		name := strings.TrimSpace(*req.DisplayName)
-		if name != "" {
-			updatedUser.DisplayName = name
-		}
-	}
-	emailChanged := false
-	var oldEmail, newEmail string
-	if req.Email != nil {
-		newEmail = normalizeEmail(*req.Email)
-		if newEmail != user.Email {
-			emailChanged = true
-			oldEmail = user.Email
-			updatedUser.Email = newEmail
-			updatedUser.EmailVerified = false
-		}
-	}
-	if req.AvatarURL != nil {
-		updatedUser.AvatarURL = strings.TrimSpace(*req.AvatarURL)
-	}
-	if req.IsHost != nil {
-		updatedUser.IsHost = *req.IsHost
-	}
-	if req.Password != nil {
-		pwd := *req.Password
-		if strings.TrimSpace(pwd) != "" {
-			if err := auth.ValidatePassword(pwd); err != nil {
-				writeAuthError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			passwordHash, err := bcrypt.GenerateFromPassword([]byte(pwd), bcrypt.DefaultCost)
-			if err != nil {
-				writeAuthError(w, http.StatusInternalServerError, "failed to hash password")
-				return
-			}
-			updatedUser.PasswordHash = string(passwordHash)
-		}
+	emailChanged := applyProfileUpdates(&updatedUser, user.Email, req)
+	if status, msg := applyPasswordUpdate(&updatedUser, req.Password); status != 0 {
+		writeAuthError(w, status, msg)
+		return
 	}
 
-	if emailChanged {
-		if err := h.Store.ChangeUserEmail(r.Context(), user.ID, oldEmail, newEmail, &updatedUser); err != nil {
-			log.Printf("[AUTH ERROR] Failed changing email for user %s: %v", user.ID, err)
-			if errors.Is(err, store.ErrAccountDeleting) {
-				writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-				return
-			}
-			writeAuthError(w, http.StatusConflict, "an account with this email already exists")
-			return
-		}
-		h.SendVerificationEmailSafe(h.publicBaseURL(r), &updatedUser)
-	} else {
-		if err := h.Store.UpdateUser(r.Context(), &updatedUser); err != nil {
-			log.Printf("[AUTH ERROR] Failed updating profile for user %s: %v", user.ID, err)
-			if errors.Is(err, store.ErrAccountDeleting) {
-				writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-				return
-			}
-			writeAuthError(w, http.StatusInternalServerError, "failed to update profile")
-			return
-		}
+	if !h.saveProfileUpdate(w, r, user, &updatedUser, emailChanged) {
+		return
 	}
 	log.Printf("[AUTH] Profile updated: id=%s name=%q email=%q host=%t", updatedUser.ID, updatedUser.DisplayName, updatedUser.Email, updatedUser.IsHost)
 	writeAuthJSON(w, http.StatusOK, &updatedUser)
+}
+
+func applyProfileUpdates(updated *models.User, currentEmail string, req updateProfileRequest) bool {
+	if req.DisplayName != nil {
+		if name := strings.TrimSpace(*req.DisplayName); name != "" {
+			updated.DisplayName = name
+		}
+	}
+	emailChanged := false
+	if req.Email != nil {
+		if newEmail := normalizeEmail(*req.Email); newEmail != currentEmail {
+			emailChanged = true
+			updated.Email = newEmail
+			updated.EmailVerified = false
+		}
+	}
+	if req.AvatarURL != nil {
+		updated.AvatarURL = strings.TrimSpace(*req.AvatarURL)
+	}
+	if req.IsHost != nil {
+		updated.IsHost = *req.IsHost
+	}
+	return emailChanged
+}
+
+func applyPasswordUpdate(updated *models.User, password *string) (int, string) {
+	if password == nil || strings.TrimSpace(*password) == "" {
+		return 0, ""
+	}
+	if err := auth.ValidatePassword(*password); err != nil {
+		return http.StatusBadRequest, err.Error()
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(*password), bcrypt.DefaultCost)
+	if err != nil {
+		return http.StatusInternalServerError, "failed to hash password"
+	}
+	updated.PasswordHash = string(passwordHash)
+	return 0, ""
+}
+
+func (h *AuthHandler) saveProfileUpdate(w http.ResponseWriter, r *http.Request, current, updated *models.User, emailChanged bool) bool {
+	if emailChanged {
+		if err := h.Store.ChangeUserEmail(r.Context(), current.ID, current.Email, updated.Email, updated); err != nil {
+			log.Printf("[AUTH ERROR] Failed changing email for user %s: %v", current.ID, err)
+			if errors.Is(err, store.ErrAccountDeleting) {
+				writeAuthError(w, http.StatusUnauthorized, "invalid access token")
+				return false
+			}
+			writeAuthError(w, http.StatusConflict, "an account with this email already exists")
+			return false
+		}
+		h.SendVerificationEmailSafe(h.publicBaseURL(r), updated)
+		return true
+	}
+	if err := h.Store.UpdateUser(r.Context(), updated); err != nil {
+		log.Printf("[AUTH ERROR] Failed updating profile for user %s: %v", current.ID, err)
+		if errors.Is(err, store.ErrAccountDeleting) {
+			writeAuthError(w, http.StatusUnauthorized, "invalid access token")
+			return false
+		}
+		writeAuthError(w, http.StatusInternalServerError, "failed to update profile")
+		return false
+	}
+	return true
 }
 
 // Logout revokes all refresh sessions for the authenticated user.
@@ -456,94 +468,100 @@ func (h *AuthHandler) RequireAuth(next http.HandlerFunc) http.HandlerFunc {
 //     or already completed deletion without restoring general session credentials.
 func (h *AuthHandler) RequireAccountDeletionAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		delHeader := strings.TrimSpace(r.Header.Get("X-Deletion-Token"))
-		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
-		var bearerToken string
-		if strings.HasPrefix(authHeader, "Bearer ") {
-			bearerToken = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
-		}
-
-		if delHeader == "" && bearerToken == "" {
-			writeAuthError(w, http.StatusUnauthorized, "bearer token is required")
+		user, status, msg := h.authenticateDeletionRequest(r)
+		if status != 0 {
+			writeAuthError(w, status, msg)
 			return
 		}
-
-		// If both headers are supplied, verify they do not belong to different tenants.
-		if delHeader != "" && bearerToken != "" {
-			delClaims, delErr := h.parseAccessToken(delHeader)
-			if delErr != nil {
-				writeAuthError(w, http.StatusUnauthorized, "invalid deletion recovery token")
-				return
-			}
-			if bearerClaims, bErr := h.parseAccessToken(bearerToken); bErr == nil && bearerClaims.UserID != delClaims.UserID {
-				writeAuthError(w, http.StatusForbidden, "cannot resume account deletion for another user")
-				return
-			}
-		}
-
-		primaryToken := delHeader
-		if primaryToken == "" {
-			primaryToken = bearerToken
-		}
-
-		claims, err := h.parseAccessToken(primaryToken)
-		if err != nil {
-			writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-			return
-		}
-
-		if claims.Action == deletionRecoveryAction {
-			if claims.DeletionEpoch == "" {
-				writeAuthError(w, http.StatusUnauthorized, "invalid deletion recovery token")
-				return
-			}
-			user, err := h.Store.GetUser(r.Context(), claims.UserID)
-			if errors.Is(err, os.ErrNotExist) {
-				// Account record was already deleted; allow idempotent completion check.
-				synthetic := &models.User{
-					ID:            claims.UserID,
-					Deleting:      true,
-					DeletionEpoch: claims.DeletionEpoch,
-				}
-				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey, synthetic)))
-				return
-			}
-			if err != nil || user == nil || !user.Deleting || user.DeletionEpoch != claims.DeletionEpoch {
-				writeAuthError(w, http.StatusUnauthorized, "invalid deletion recovery token")
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey, user)))
-			return
-		}
-
-		if claims.Action != "" {
-			writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-			return
-		}
-
-		user, err := h.Store.GetUser(r.Context(), claims.UserID)
-		if errors.Is(err, os.ErrNotExist) {
-			writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-			return
-		}
-		if err != nil || user == nil {
-			writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-			return
-		}
-		if !user.Deleting {
-			if user.AuthEpoch != claims.AuthEpoch {
-				writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-				return
-			}
-		} else {
-			if user.DeletionEpoch == "" || user.DeletionAuthEpoch != claims.AuthEpoch {
-				writeAuthError(w, http.StatusUnauthorized, "invalid access token")
-				return
-			}
-		}
-
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), userContextKey, user)))
 	}
+}
+
+func (h *AuthHandler) authenticateDeletionRequest(r *http.Request) (*models.User, int, string) {
+	delHeader, bearerToken := extractDeletionTokens(r)
+	if delHeader == "" && bearerToken == "" {
+		return nil, http.StatusUnauthorized, "bearer token is required"
+	}
+
+	// If both headers are supplied, verify they do not belong to different tenants.
+	if status, msg := h.validateDeletionTokenPair(delHeader, bearerToken); status != 0 {
+		return nil, status, msg
+	}
+
+	primaryToken := delHeader
+	if primaryToken == "" {
+		primaryToken = bearerToken
+	}
+
+	claims, err := h.parseAccessToken(primaryToken)
+	if err != nil {
+		return nil, http.StatusUnauthorized, "invalid access token"
+	}
+
+	if claims.Action == deletionRecoveryAction {
+		return h.resolveDeletionRecoveryUser(r.Context(), claims)
+	}
+	return h.resolveDeletionSessionUser(r.Context(), claims)
+}
+
+func extractDeletionTokens(r *http.Request) (string, string) {
+	delHeader := strings.TrimSpace(r.Header.Get("X-Deletion-Token"))
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	var bearerToken string
+	if strings.HasPrefix(authHeader, "Bearer ") {
+		bearerToken = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+	}
+	return delHeader, bearerToken
+}
+
+func (h *AuthHandler) validateDeletionTokenPair(delHeader, bearerToken string) (int, string) {
+	if delHeader == "" || bearerToken == "" {
+		return 0, ""
+	}
+	delClaims, delErr := h.parseAccessToken(delHeader)
+	if delErr != nil {
+		return http.StatusUnauthorized, "invalid deletion recovery token"
+	}
+	if bearerClaims, bErr := h.parseAccessToken(bearerToken); bErr == nil && bearerClaims.UserID != delClaims.UserID {
+		return http.StatusForbidden, "cannot resume account deletion for another user"
+	}
+	return 0, ""
+}
+
+func (h *AuthHandler) resolveDeletionRecoveryUser(ctx context.Context, claims *accessClaims) (*models.User, int, string) {
+	if claims.DeletionEpoch == "" {
+		return nil, http.StatusUnauthorized, "invalid deletion recovery token"
+	}
+	user, err := h.Store.GetUser(ctx, claims.UserID)
+	if errors.Is(err, os.ErrNotExist) {
+		// Account record was already deleted; allow idempotent completion check.
+		return &models.User{
+			ID:            claims.UserID,
+			Deleting:      true,
+			DeletionEpoch: claims.DeletionEpoch,
+		}, 0, ""
+	}
+	if err != nil || user == nil || !user.Deleting || user.DeletionEpoch != claims.DeletionEpoch {
+		return nil, http.StatusUnauthorized, "invalid deletion recovery token"
+	}
+	return user, 0, ""
+}
+
+func (h *AuthHandler) resolveDeletionSessionUser(ctx context.Context, claims *accessClaims) (*models.User, int, string) {
+	if claims.Action != "" {
+		return nil, http.StatusUnauthorized, "invalid access token"
+	}
+	user, err := h.Store.GetUser(ctx, claims.UserID)
+	if err != nil || user == nil {
+		return nil, http.StatusUnauthorized, "invalid access token"
+	}
+	if !user.Deleting && user.AuthEpoch != claims.AuthEpoch {
+		return nil, http.StatusUnauthorized, "invalid access token"
+	}
+	if user.Deleting && (user.DeletionEpoch == "" || user.DeletionAuthEpoch != claims.AuthEpoch) {
+		return nil, http.StatusUnauthorized, "invalid access token"
+	}
+	return user, 0, ""
 }
 
 // NewDeletionRecoveryToken issues a single-purpose token scoped strictly to resuming

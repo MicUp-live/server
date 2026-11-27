@@ -42,59 +42,57 @@ func HashKioskPIN(pin string) string {
 }
 
 func applyEventSettingsUpdate(event *models.Event, update models.EventUpdate) {
-	if update.Name != nil {
-		event.Name = strings.TrimSpace(*update.Name)
-	}
-	if update.VenueName != nil {
-		event.VenueName = strings.TrimSpace(*update.VenueName)
-	}
-	if update.TipURL != nil {
-		event.TipURL = strings.TrimSpace(*update.TipURL)
-	}
-	if update.Announcement != nil {
-		event.Announcement = strings.TrimSpace(*update.Announcement)
-	}
-	if update.KioskPIN != nil {
-		pin := strings.TrimSpace(*update.KioskPIN)
-		if pin != "" {
-			event.KioskPIN = pin
-		}
-	}
+	applyTrimmedString(&event.Name, update.Name)
+	applyTrimmedString(&event.VenueName, update.VenueName)
+	applyTrimmedString(&event.TipURL, update.TipURL)
+	applyTrimmedString(&event.Announcement, update.Announcement)
+	applyKioskPINUpdate(event, update.KioskPIN)
 	if update.CurrentRound != nil && *update.CurrentRound > 0 {
 		event.CurrentRound = *update.CurrentRound
 	}
 	if update.SingerWeights != nil {
 		event.SingerWeights = models.NormalizeSingerWeights(*update.SingerWeights)
 	}
-	if update.AutoAccept != nil {
-		event.AutoAccept = *update.AutoAccept
+	applySubmissionDelayUpdate(event, update.SubmissionDelay)
+	applyMaxActiveUpdate(event, update.MaxActivePerSinger)
+	applyBoolIfPresent(&event.AutoAccept, update.AutoAccept)
+	applyBoolIfPresent(&event.Recurring, update.Recurring)
+	applyBoolIfPresent(&event.AllowKeyChange, update.AllowKeyChange)
+	applyBoolIfPresent(&event.AllowWriteIns, update.AllowWriteIns)
+	applyBoolIfPresent(&event.AllowSongReplacement, update.AllowSongReplacement)
+}
+
+func applyTrimmedString(dst, src *string) {
+	if src != nil {
+		*dst = strings.TrimSpace(*src)
 	}
-	if update.SubmissionDelay != nil {
-		delay := *update.SubmissionDelay
-		if delay < 0 {
-			delay = 0
-		} else if delay > 600 {
-			delay = 600
-		}
-		event.SubmissionDelay = delay
+}
+
+func applyBoolIfPresent(dst, src *bool) {
+	if src != nil {
+		*dst = *src
 	}
-	if update.MaxActivePerSinger != nil {
-		maxActive := *update.MaxActivePerSinger
-		if maxActive < 0 {
-			maxActive = 0
-		}
-		event.MaxActivePerSinger = maxActive
+}
+
+func applyKioskPINUpdate(event *models.Event, rawPIN *string) {
+	if rawPIN == nil {
+		return
 	}
-	if update.Recurring != nil {
-		event.Recurring = *update.Recurring
+	if pin := strings.TrimSpace(*rawPIN); pin != "" {
+		event.KioskPIN = pin
 	}
-	if update.AllowKeyChange != nil {
-		event.AllowKeyChange = *update.AllowKeyChange
+}
+
+func applySubmissionDelayUpdate(event *models.Event, delay *int) {
+	if delay == nil {
+		return
 	}
-	if update.AllowWriteIns != nil {
-		event.AllowWriteIns = *update.AllowWriteIns
+	event.SubmissionDelay = min(max(*delay, 0), 600)
+}
+
+func applyMaxActiveUpdate(event *models.Event, maxActive *int) {
+	if maxActive == nil {
+		return
 	}
-	if update.AllowSongReplacement != nil {
-		event.AllowSongReplacement = *update.AllowSongReplacement
-	}
+	event.MaxActivePerSinger = max(*maxActive, 0)
 }

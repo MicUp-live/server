@@ -73,21 +73,30 @@ func NewService(songbooks store.SongbookStore, events EventLister) *Service {
 	}
 }
 
+func (s *Service) resolveSlug(ctx context.Context, rawSlug, excludeID string) (string, error) {
+	slug := models.NormalizeSlug(rawSlug)
+	if slug == "" {
+		return "", nil
+	}
+	if err := models.ValidateSlug(slug); err != nil {
+		return "", fmt.Errorf("%w: %s", os.ErrInvalid, err.Error())
+	}
+	existing, err := s.Songbooks.GetSongbookBySlug(ctx, slug)
+	if err == nil && existing != nil && (excludeID == "" || existing.ID != excludeID) {
+		return "", ErrSlugTaken
+	}
+	return slug, nil
+}
+
 // CreateSongbook validates and stores a new songbook.
 func (s *Service) CreateSongbook(ctx context.Context, ownerID string, req models.SongbookCreate) (*models.Songbook, error) {
 	if s.Songbooks == nil {
 		return nil, ErrSongbookNotFound
 	}
 
-	slug := models.NormalizeSlug(req.Slug)
-	if slug != "" {
-		if err := models.ValidateSlug(slug); err != nil {
-			return nil, fmt.Errorf("%w: %s", os.ErrInvalid, err.Error())
-		}
-		existing, err := s.Songbooks.GetSongbookBySlug(ctx, slug)
-		if err == nil && existing != nil {
-			return nil, ErrSlugTaken
-		}
+	slug, err := s.resolveSlug(ctx, req.Slug, "")
+	if err != nil {
+		return nil, err
 	}
 
 	sb := &models.Songbook{
@@ -129,16 +138,23 @@ func (s *Service) GetSongbook(ctx context.Context, id string) (*models.Songbook,
 	return sb, nil
 }
 
+func validateSongbookUpdate(req models.SongbookUpdate) error {
+	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
+		return fmt.Errorf("name is required: %w", os.ErrInvalid)
+	}
+	if req.Name == nil && req.IsPublic == nil && req.Slug == nil {
+		return fmt.Errorf("at least one field is required: %w", os.ErrInvalid)
+	}
+	return nil
+}
+
 // UpdateSongbook updates the name, slug, and publication state of an existing songbook.
 func (s *Service) UpdateSongbook(ctx context.Context, id string, req models.SongbookUpdate) (*models.Songbook, error) {
 	if s.Songbooks == nil {
 		return nil, ErrSongbookNotFound
 	}
-	if req.Name != nil && strings.TrimSpace(*req.Name) == "" {
-		return nil, fmt.Errorf("name is required: %w", os.ErrInvalid)
-	}
-	if req.Name == nil && req.IsPublic == nil && req.Slug == nil {
-		return nil, fmt.Errorf("at least one field is required: %w", os.ErrInvalid)
+	if err := validateSongbookUpdate(req); err != nil {
+		return nil, err
 	}
 
 	songbook, err := s.Songbooks.GetSongbook(ctx, id)
@@ -153,15 +169,9 @@ func (s *Service) UpdateSongbook(ctx context.Context, id string, req models.Song
 		songbook.IsPublic = *req.IsPublic
 	}
 	if req.Slug != nil {
-		slug := models.NormalizeSlug(*req.Slug)
-		if slug != "" {
-			if err := models.ValidateSlug(slug); err != nil {
-				return nil, fmt.Errorf("%w: %s", os.ErrInvalid, err.Error())
-			}
-			existing, err := s.Songbooks.GetSongbookBySlug(ctx, slug)
-			if err == nil && existing != nil && existing.ID != songbook.ID {
-				return nil, ErrSlugTaken
-			}
+		slug, err := s.resolveSlug(ctx, *req.Slug, songbook.ID)
+		if err != nil {
+			return nil, err
 		}
 		songbook.Slug = slug
 	}

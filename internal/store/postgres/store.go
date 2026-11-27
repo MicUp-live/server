@@ -122,42 +122,31 @@ func (s *Store) currentTime() time.Time {
 func (s *Store) withTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	var lastErr error
 	for attempt := 0; attempt < maxTxRetries; attempt++ {
-		tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
-		if err != nil {
-			if isSerializationFailure(err) && attempt+1 < maxTxRetries {
-				lastErr = err
-				if sleepErr := retryBackoff(ctx, attempt); sleepErr != nil {
-					return sleepErr
-				}
-				continue
-			}
+		err := s.runTxAttempt(ctx, fn)
+		if err == nil {
+			return nil
+		}
+		if !isSerializationFailure(err) || attempt+1 >= maxTxRetries {
 			return err
 		}
-		err = fn(tx)
-		if err != nil {
-			_ = tx.Rollback(ctx)
-			if isSerializationFailure(err) && attempt+1 < maxTxRetries {
-				lastErr = err
-				if sleepErr := retryBackoff(ctx, attempt); sleepErr != nil {
-					return sleepErr
-				}
-				continue
-			}
-			return err
+		lastErr = err
+		if sleepErr := retryBackoff(ctx, attempt); sleepErr != nil {
+			return sleepErr
 		}
-		if err := tx.Commit(ctx); err != nil {
-			if isSerializationFailure(err) && attempt+1 < maxTxRetries {
-				lastErr = err
-				if sleepErr := retryBackoff(ctx, attempt); sleepErr != nil {
-					return sleepErr
-				}
-				continue
-			}
-			return err
-		}
-		return nil
 	}
 	return fmt.Errorf("transaction failed after %d retries: %w", maxTxRetries, lastErr)
+}
+
+func (s *Store) runTxAttempt(ctx context.Context, fn func(pgx.Tx) error) error {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return err
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback(ctx)
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func retryBackoff(ctx context.Context, attempt int) error {

@@ -131,27 +131,30 @@ func (s *Store) UpdateSongbookGrant(ctx context.Context, grant *models.SongbookG
 		if tag.RowsAffected() > 0 {
 			return nil
 		}
-
-		var deleting bool
-		if err := tx.QueryRow(ctx, `SELECT deleting FROM songbooks WHERE id = $1`, grant.SongbookID).Scan(&deleting); err != nil {
-			if isNotFound(err) {
-				return os.ErrNotExist
-			}
-			return fmt.Errorf("check songbook state for grant update: %w", err)
-		}
-		if deleting {
-			return store.ErrSongbookDeleting
-		}
-
-		var exists int
-		if err := tx.QueryRow(ctx, `SELECT 1 FROM songbook_grants WHERE songbook_id = $1 AND user_id = $2`, grant.SongbookID, grant.UserID).Scan(&exists); err != nil {
-			if isNotFound(err) {
-				return store.ErrGrantNotFound
-			}
-			return fmt.Errorf("check songbook grant existence: %w", err)
-		}
-		return os.ErrNotExist
+		return diagnoseGrantUpdateMiss(ctx, tx, grant.SongbookID, grant.UserID)
 	})
+}
+
+func diagnoseGrantUpdateMiss(ctx context.Context, tx pgx.Tx, songbookID, userID string) error {
+	var deleting bool
+	if err := tx.QueryRow(ctx, `SELECT deleting FROM songbooks WHERE id = $1`, songbookID).Scan(&deleting); err != nil {
+		if isNotFound(err) {
+			return os.ErrNotExist
+		}
+		return fmt.Errorf("check songbook state for grant update: %w", err)
+	}
+	if deleting {
+		return store.ErrSongbookDeleting
+	}
+
+	var exists int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM songbook_grants WHERE songbook_id = $1 AND user_id = $2`, songbookID, userID).Scan(&exists); err != nil {
+		if isNotFound(err) {
+			return store.ErrGrantNotFound
+		}
+		return fmt.Errorf("check songbook grant existence: %w", err)
+	}
+	return os.ErrNotExist
 }
 
 // DeleteSongbookGrant revokes a collaborator's grant on a songbook.

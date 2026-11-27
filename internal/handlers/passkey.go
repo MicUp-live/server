@@ -229,10 +229,7 @@ func (h *PasskeyHandler) RegisterOptions(w http.ResponseWriter, r *http.Request)
 // RegisterVerify verifies attestation and registers the passkey.
 func (h *PasskeyHandler) RegisterVerify(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		sessionID = r.Header.Get("X-Session-ID")
-	}
+	sessionID := extractSessionID(r)
 	if sessionID == "" {
 		writeAuthError(w, http.StatusBadRequest, "session_id required")
 		return
@@ -255,34 +252,10 @@ func (h *PasskeyHandler) RegisterVerify(w http.ResponseWriter, r *http.Request) 
 		friendlyName = "Passkey Device"
 	}
 
-	// Resolve or create user
-	var targetUser *models.User
-	if meta.UserID != "" {
-		targetUser, _ = h.authStore.GetUser(ctx, meta.UserID)
-	}
-	if targetUser == nil {
-		targetUser = h.resolveUser(r)
-	}
-	if targetUser != nil && targetUser.Deleting {
+	targetUser, isNewUser, err := h.resolveRegistrationTarget(ctx, r, meta)
+	if err != nil {
 		writeAuthError(w, http.StatusUnauthorized, "invalid access token")
 		return
-	}
-
-	isNewUser := false
-	if targetUser == nil {
-		isNewUser = true
-		now := time.Now().UTC()
-		targetUser = &models.User{
-			ID:          meta.UserID,
-			Email:       meta.Email,
-			DisplayName: meta.DisplayName,
-			IsHost:      meta.IsHost,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		if targetUser.DisplayName == "" {
-			targetUser.DisplayName = "Singer"
-		}
 	}
 
 	var creds []webauthn.Credential
@@ -307,15 +280,65 @@ func (h *PasskeyHandler) RegisterVerify(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	pk := buildPasskeyCredential(targetUser.ID, friendlyName, credential)
+	if !h.persistRegisteredPasskey(ctx, w, targetUser, pk, isNewUser) {
+		return
+	}
+
+	log.Printf("[PASSKEY] Passkey registered: cred=%s name=%q user=%s", pk.ID, pk.FriendlyName, targetUser.ID)
+	if isNewUser && targetUser.Email != "" {
+		h.authHandler.SendVerificationEmailSafe(h.authHandler.publicBaseURL(r), targetUser)
+	}
+	// Issue login session
+	h.authHandler.WriteSession(w, r, targetUser, http.StatusOK)
+}
+
+func extractSessionID(r *http.Request) string {
+	if sessionID := r.URL.Query().Get("session_id"); sessionID != "" {
+		return sessionID
+	}
+	return r.Header.Get("X-Session-ID")
+}
+
+func (h *PasskeyHandler) resolveRegistrationTarget(ctx context.Context, r *http.Request, meta passkeyRegistrationMeta) (*models.User, bool, error) {
+	var targetUser *models.User
+	if meta.UserID != "" {
+		targetUser, _ = h.authStore.GetUser(ctx, meta.UserID)
+	}
+	if targetUser == nil {
+		targetUser = h.resolveUser(r)
+	}
+	if targetUser != nil && targetUser.Deleting {
+		return nil, false, errors.New("invalid access token")
+	}
+	if targetUser != nil {
+		return targetUser, false, nil
+	}
+
+	now := time.Now().UTC()
+	displayName := meta.DisplayName
+	if displayName == "" {
+		displayName = "Singer"
+	}
+	return &models.User{
+		ID:          meta.UserID,
+		Email:       meta.Email,
+		DisplayName: displayName,
+		IsHost:      meta.IsHost,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}, true, nil
+}
+
+func buildPasskeyCredential(userID, friendlyName string, credential *webauthn.Credential) *models.PasskeyCredential {
 	transports := make([]string, 0, len(credential.Transport))
 	for _, t := range credential.Transport {
 		transports = append(transports, string(t))
 	}
-
-	credID := base64.RawURLEncoding.EncodeToString(credential.ID)
-	pk := &models.PasskeyCredential{
-		ID:              credID,
-		UserID:          targetUser.ID,
+	now := time.Now().UTC()
+	return &models.PasskeyCredential{
+		ID:              base64.RawURLEncoding.EncodeToString(credential.ID),
+		UserID:          userID,
 		PublicKey:       credential.PublicKey,
 		AttestationType: credential.AttestationType,
 		AAGUID:          credential.Authenticator.AAGUID,
@@ -326,30 +349,26 @@ func (h *PasskeyHandler) RegisterVerify(w http.ResponseWriter, r *http.Request) 
 		UserPresent:     credential.Flags.UserPresent,
 		UserVerified:    credential.Flags.UserVerified,
 		FriendlyName:    friendlyName,
-		CreatedAt:       time.Now().UTC(),
-		LastUsedAt:      time.Now().UTC(),
+		CreatedAt:       now,
+		LastUsedAt:      now,
 	}
+}
 
+func (h *PasskeyHandler) persistRegisteredPasskey(ctx context.Context, w http.ResponseWriter, targetUser *models.User, pk *models.PasskeyCredential, isNewUser bool) bool {
 	if isNewUser {
 		if err := h.passkeyStore.CreateUserWithPasskey(ctx, targetUser, pk); err != nil {
 			fmt.Printf("[Passkey RegisterVerify ERROR CreateUserWithPasskey] %v\n", err)
 			writeAuthError(w, http.StatusConflict, "An account with this email already exists or registration could not be completed.")
-			return
+			return false
 		}
-	} else {
-		if err := h.passkeyStore.SavePasskeyCredential(ctx, pk); err != nil {
-			fmt.Printf("[Passkey RegisterVerify ERROR SavePasskeyCredential] %v\n", err)
-			writeAuthError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store passkey: %v", err))
-			return
-		}
+		return true
 	}
-
-	log.Printf("[PASSKEY] Passkey registered: cred=%s name=%q user=%s", credID, pk.FriendlyName, targetUser.ID)
-	if isNewUser && targetUser.Email != "" {
-		h.authHandler.SendVerificationEmailSafe(h.authHandler.publicBaseURL(r), targetUser)
+	if err := h.passkeyStore.SavePasskeyCredential(ctx, pk); err != nil {
+		fmt.Printf("[Passkey RegisterVerify ERROR SavePasskeyCredential] %v\n", err)
+		writeAuthError(w, http.StatusInternalServerError, fmt.Sprintf("failed to store passkey: %v", err))
+		return false
 	}
-	// Issue login session
-	h.authHandler.WriteSession(w, r, targetUser, http.StatusOK)
+	return true
 }
 
 // LoginOptions initiates a discoverable or email-directed passkey assertion.
@@ -427,10 +446,7 @@ func (h *PasskeyHandler) LoginOptions(w http.ResponseWriter, r *http.Request) {
 // LoginVerify verifies assertion and authenticates the user.
 func (h *PasskeyHandler) LoginVerify(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	sessionID := r.URL.Query().Get("session_id")
-	if sessionID == "" {
-		sessionID = r.Header.Get("X-Session-ID")
-	}
+	sessionID := extractSessionID(r)
 	if sessionID == "" {
 		writeAuthError(w, http.StatusBadRequest, "session_id required")
 		return
@@ -455,21 +471,13 @@ func (h *PasskeyHandler) LoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID := sessionData.UserID
-	if len(userID) == 0 {
-		userID = parsedResponse.Response.UserHandle
-	}
+	userID := resolveLoginUserID(sessionData, parsedResponse)
 	if len(userID) == 0 {
 		writeAuthError(w, http.StatusUnauthorized, "user handle required")
 		return
 	}
-	user, err := h.authStore.GetUser(ctx, string(userID))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		writeAuthError(w, http.StatusInternalServerError, "failed to load user")
-		return
-	}
-	if err != nil || user == nil || user.Deleting {
-		writeAuthError(w, http.StatusUnauthorized, "user not found")
+	user, ok := h.loadLoginUser(ctx, w, userID)
+	if !ok {
 		return
 	}
 	stored, err := h.passkeyStore.ListPasskeyCredentialsForUser(ctx, user.ID)
@@ -478,34 +486,13 @@ func (h *PasskeyHandler) LoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var matched *models.PasskeyCredential
-	wUser := &webauthnUser{id: []byte(user.ID), name: user.Email, displayName: user.DisplayName}
-	for _, record := range stored {
-		c := toWebAuthnCredential(record)
-		if matched == nil && bytes.Equal(c.ID, parsedResponse.RawID) {
-			matched = record
-			// Older registrations omitted backup eligibility. Verify the asserted
-			// flags in memory before committing them to the same stored record.
-			if parsedResponse.Response.AuthenticatorData.Flags.HasBackupEligible() {
-				c.Flags.BackupEligible = true
-			}
-		}
-		wUser.credentials = append(wUser.credentials, c)
-	}
+	wUser, matched := matchLoginCredential(user, stored, parsedResponse)
 	if matched == nil {
 		writeAuthError(w, http.StatusUnauthorized, "credential not found")
 		return
 	}
 
-	wn := h.getWebAuthn(r)
-	var credential *webauthn.Credential
-	if len(sessionData.UserID) > 0 {
-		credential, err = wn.ValidateLogin(wUser, sessionData, parsedResponse)
-	} else {
-		_, credential, err = wn.ValidatePasskeyLogin(func(_, _ []byte) (webauthn.User, error) {
-			return wUser, nil
-		}, sessionData, parsedResponse)
-	}
+	credential, err := validatePasskeyAssertion(h.getWebAuthn(r), wUser, sessionData, parsedResponse)
 	if err != nil {
 		log.Printf("[PASSKEY WARN] Login verification failed: %v", err)
 		writeAuthError(w, http.StatusUnauthorized, fmt.Sprintf("passkey verification failed: %v", err))
@@ -529,6 +516,54 @@ func (h *PasskeyHandler) LoginVerify(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[PASSKEY] Login verified: cred=%s user=%s (%s)", matched.ID, user.ID, user.DisplayName)
 	h.authHandler.WriteSession(w, r, user, http.StatusOK)
+}
+
+func resolveLoginUserID(sessionData webauthn.SessionData, parsedResponse *protocol.ParsedCredentialAssertionData) []byte {
+	if len(sessionData.UserID) > 0 {
+		return sessionData.UserID
+	}
+	return parsedResponse.Response.UserHandle
+}
+
+func (h *PasskeyHandler) loadLoginUser(ctx context.Context, w http.ResponseWriter, userID []byte) (*models.User, bool) {
+	user, err := h.authStore.GetUser(ctx, string(userID))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		writeAuthError(w, http.StatusInternalServerError, "failed to load user")
+		return nil, false
+	}
+	if err != nil || user == nil || user.Deleting {
+		writeAuthError(w, http.StatusUnauthorized, "user not found")
+		return nil, false
+	}
+	return user, true
+}
+
+func matchLoginCredential(user *models.User, stored []*models.PasskeyCredential, parsedResponse *protocol.ParsedCredentialAssertionData) (*webauthnUser, *models.PasskeyCredential) {
+	var matched *models.PasskeyCredential
+	wUser := &webauthnUser{id: []byte(user.ID), name: user.Email, displayName: user.DisplayName}
+	for _, record := range stored {
+		c := toWebAuthnCredential(record)
+		if matched == nil && bytes.Equal(c.ID, parsedResponse.RawID) {
+			matched = record
+			// Older registrations omitted backup eligibility. Verify the asserted
+			// flags in memory before committing them to the same stored record.
+			if parsedResponse.Response.AuthenticatorData.Flags.HasBackupEligible() {
+				c.Flags.BackupEligible = true
+			}
+		}
+		wUser.credentials = append(wUser.credentials, c)
+	}
+	return wUser, matched
+}
+
+func validatePasskeyAssertion(wn *webauthn.WebAuthn, wUser *webauthnUser, sessionData webauthn.SessionData, parsedResponse *protocol.ParsedCredentialAssertionData) (*webauthn.Credential, error) {
+	if len(sessionData.UserID) > 0 {
+		return wn.ValidateLogin(wUser, sessionData, parsedResponse)
+	}
+	_, credential, err := wn.ValidatePasskeyLogin(func(_, _ []byte) (webauthn.User, error) {
+		return wUser, nil
+	}, sessionData, parsedResponse)
+	return credential, err
 }
 
 // ListPasskeys lists all registered passkeys for the authenticated user.

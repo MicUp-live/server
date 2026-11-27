@@ -177,18 +177,9 @@ func (c Config) Validate() error {
 	if len(c.AuthSecret) < 32 {
 		return errors.New("AUTH_SECRET must be at least 32 bytes")
 	}
-	if c.Environment == Production && len(c.AllowedOrigins) == 0 {
-		return errors.New("CORS_ALLOW_ORIGIN is required in production")
-	}
 	if c.Environment == Production {
-		for _, origin := range c.AllowedOrigins {
-			if origin == "*" {
-				return errors.New("CORS_ALLOW_ORIGIN cannot contain * in production")
-			}
-		}
-		baseURL, err := url.Parse(c.PublicBaseURL)
-		if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" {
-			return errors.New("PUBLIC_BASE_URL must be an absolute HTTPS URL in production")
+		if err := c.validateProduction(); err != nil {
+			return err
 		}
 	}
 	if c.AuthRateLimit < 1 || c.PublicRequestLimit < 1 {
@@ -199,6 +190,22 @@ func (c Config) Validate() error {
 	}
 	if c.DeveloperKeyScopeMode != DeveloperKeyScopeReport && c.DeveloperKeyScopeMode != DeveloperKeyScopeEnforce {
 		return fmt.Errorf("DEVELOPER_KEY_SCOPE_MODE must be %q or %q", DeveloperKeyScopeReport, DeveloperKeyScopeEnforce)
+	}
+	return nil
+}
+
+func (c Config) validateProduction() error {
+	if len(c.AllowedOrigins) == 0 {
+		return errors.New("CORS_ALLOW_ORIGIN is required in production")
+	}
+	for _, origin := range c.AllowedOrigins {
+		if origin == "*" {
+			return errors.New("CORS_ALLOW_ORIGIN cannot contain * in production")
+		}
+	}
+	baseURL, err := url.Parse(c.PublicBaseURL)
+	if err != nil || baseURL.Scheme != "https" || baseURL.Host == "" {
+		return errors.New("PUBLIC_BASE_URL must be an absolute HTTPS URL in production")
 	}
 	return nil
 }

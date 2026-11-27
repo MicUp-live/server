@@ -52,60 +52,94 @@ func NormalizeFavorites(favs *UserFavorites) (*UserFavorites, error) {
 
 	nowMs := time.Now().UnixMilli()
 
-	normalizedSongs := make([]FavoriteSong, 0, len(favs.Songs))
+	normalizedSongs, err := normalizeFavoriteSongs(favs.Songs, nowMs)
+	if err != nil {
+		return nil, err
+	}
+
+	normalizedArtists, err := normalizeFavoriteArtists(favs.Artists, nowMs)
+	if err != nil {
+		return nil, err
+	}
+
+	return &UserFavorites{
+		Songs:   normalizedSongs,
+		Artists: normalizedArtists,
+	}, nil
+}
+
+func defaultAddedAt(addedAt, nowMs int64) int64 {
+	if addedAt <= 0 {
+		return nowMs
+	}
+	return addedAt
+}
+
+func normalizeFavoriteSong(s FavoriteSong, nowMs int64) (FavoriteSong, bool, error) {
+	artist := strings.TrimSpace(s.Artist)
+	title := strings.TrimSpace(s.Title)
+	if artist == "" || title == "" {
+		return FavoriteSong{}, false, nil
+	}
+
+	if s.PreferredKey < MinPreferredKey || s.PreferredKey > MaxPreferredKey {
+		return FavoriteSong{}, false, ErrInvalidPreferredKey
+	}
+
+	return FavoriteSong{
+		Artist:       artist,
+		Title:        title,
+		PreferredKey: s.PreferredKey,
+		CanonicalID:  strings.TrimSpace(s.CanonicalID),
+		AddedAt:      defaultAddedAt(s.AddedAt, nowMs),
+	}, true, nil
+}
+
+func markSongSeen(song FavoriteSong, seenCanonical, seenSongKey map[string]bool) bool {
+	canonicalKey := strings.ToLower(song.CanonicalID)
+	songKey := strings.ToLower(song.Artist) + "::" + strings.ToLower(song.Title)
+
+	if canonicalKey != "" && seenCanonical[canonicalKey] {
+		return true
+	}
+	if seenSongKey[songKey] {
+		return true
+	}
+
+	if canonicalKey != "" {
+		seenCanonical[canonicalKey] = true
+	}
+	seenSongKey[songKey] = true
+	return false
+}
+
+func normalizeFavoriteSongs(songs []FavoriteSong, nowMs int64) ([]FavoriteSong, error) {
+	normalized := make([]FavoriteSong, 0, len(songs))
 	seenCanonical := make(map[string]bool)
 	seenSongKey := make(map[string]bool)
 
-	for _, s := range favs.Songs {
-		artist := strings.TrimSpace(s.Artist)
-		title := strings.TrimSpace(s.Title)
-		canonicalID := strings.TrimSpace(s.CanonicalID)
-
-		if artist == "" || title == "" {
+	for _, s := range songs {
+		song, ok, err := normalizeFavoriteSong(s, nowMs)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || markSongSeen(song, seenCanonical, seenSongKey) {
 			continue
 		}
-
-		if s.PreferredKey < MinPreferredKey || s.PreferredKey > MaxPreferredKey {
-			return nil, ErrInvalidPreferredKey
-		}
-
-		canonicalKey := strings.ToLower(canonicalID)
-		songKey := strings.ToLower(artist) + "::" + strings.ToLower(title)
-
-		if canonicalKey != "" && seenCanonical[canonicalKey] {
-			continue
-		}
-		if seenSongKey[songKey] {
-			continue
-		}
-
-		if canonicalKey != "" {
-			seenCanonical[canonicalKey] = true
-		}
-		seenSongKey[songKey] = true
-
-		addedAt := s.AddedAt
-		if addedAt <= 0 {
-			addedAt = nowMs
-		}
-
-		normalizedSongs = append(normalizedSongs, FavoriteSong{
-			Artist:       artist,
-			Title:        title,
-			PreferredKey: s.PreferredKey,
-			CanonicalID:  canonicalID,
-			AddedAt:      addedAt,
-		})
+		normalized = append(normalized, song)
 	}
 
-	if len(normalizedSongs) > MaxFavoriteSongs {
+	if len(normalized) > MaxFavoriteSongs {
 		return nil, ErrFavoriteSongsLimitExceeded
 	}
+	return normalized, nil
+}
 
-	normalizedArtists := make([]FavoriteArtist, 0, len(favs.Artists))
+func normalizeFavoriteArtists(artists []FavoriteArtist, nowMs int64) ([]FavoriteArtist, error) {
+	normalized := make([]FavoriteArtist, 0, len(artists))
 	seenArtistKey := make(map[string]bool)
 
-	for _, a := range favs.Artists {
+	for _, a := range artists {
 		name := strings.TrimSpace(a.Name)
 		if name == "" {
 			continue
@@ -117,23 +151,14 @@ func NormalizeFavorites(favs *UserFavorites) (*UserFavorites, error) {
 		}
 		seenArtistKey[artistKey] = true
 
-		addedAt := a.AddedAt
-		if addedAt <= 0 {
-			addedAt = nowMs
-		}
-
-		normalizedArtists = append(normalizedArtists, FavoriteArtist{
+		normalized = append(normalized, FavoriteArtist{
 			Name:    name,
-			AddedAt: addedAt,
+			AddedAt: defaultAddedAt(a.AddedAt, nowMs),
 		})
 	}
 
-	if len(normalizedArtists) > MaxFavoriteArtists {
+	if len(normalized) > MaxFavoriteArtists {
 		return nil, ErrFavoriteArtistsLimitExceeded
 	}
-
-	return &UserFavorites{
-		Songs:   normalizedSongs,
-		Artists: normalizedArtists,
-	}, nil
+	return normalized, nil
 }

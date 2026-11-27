@@ -13,12 +13,13 @@ Preview the production OpenTofu plan from GitHub Actions with
 `gh workflow run deploy.yml --ref main -f plan_only=true`. Review the completed
 run before applying with `gh workflow run deploy.yml --ref main -f plan_only=false`.
 
-When deploying schema changes to Aurora DSQL (`infra/dsql.tf`), apply the
-embedded schema idempotently with `cmd/pg-migrate` using IAM token auth
-(`STORE_BACKEND=postgres`, `POSTGRES_DSQL_MODE=true`, `DSQL_ENDPOINT=<endpoint>`,
-`AWS_REGION=us-east-2`), which executes one DDL statement at a time and
-rewrites index creation to `ASYNC`. No static database passwords or VPC are
-used.
+`mise run deploy:production` automatically applies embedded schema migrations to
+Aurora DSQL (`infra/dsql.tf`) before running `tofu apply` by invoking
+`mise run db:migrate:production` (which can also be run standalone). That task
+runs `cmd/pg-migrate` using IAM token auth (`STORE_BACKEND=postgres`,
+`POSTGRES_DSQL_MODE=true`, `DSQL_ENDPOINT=<endpoint>`, `AWS_REGION=us-east-2`),
+executing one DDL statement at a time and rewriting index creation to `ASYNC`.
+No static database passwords or VPC are used.
 
 ## Production smoke flow
 

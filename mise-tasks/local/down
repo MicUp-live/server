@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Stop the complete local production simulation"
+set -euo pipefail
+
+exec docker compose down "$@"

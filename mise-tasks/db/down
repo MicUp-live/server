@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Stop local PostgreSQL 16"
+#MISE alias="pg:down"
+set -euo pipefail
+
+exec docker compose stop postgres

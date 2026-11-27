@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Run all Go package tests against local PostgreSQL 16"
+#MISE depends=["pg:up"]
+set -euo pipefail
+
+exec go test -count=1 ./... "$@"

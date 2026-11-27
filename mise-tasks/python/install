@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Install Python tooling dependencies into the project virtualenv"
+set -euo pipefail
+
+exec python -m pip install -r requirements.txt "$@"

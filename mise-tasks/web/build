@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Build frontend for production"
+#MISE dir="web"
+#MISE depends=["web:install"]
+set -euo pipefail
+
+exec npm run build "$@"

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Run frontend unit tests"
+#MISE dir="web"
+#MISE depends=["web:install"]
+set -euo pipefail
+
+exec npm test "$@"

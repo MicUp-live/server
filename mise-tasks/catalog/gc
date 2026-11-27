@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Report unreferenced catalog versions (use --dry-run=false to delete after the grace period)"
+set -euo pipefail
+
+exec go run ./cmd/catalog-gc "$@"

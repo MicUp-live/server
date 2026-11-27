@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+#MISE description="Build and deploy static frontend to S3 and CloudFront"
+#MISE depends=["tofu:init", "web:build"]
+set -euo pipefail
+
+BUCKET=$(tofu -chdir=infra output -raw s3_bucket_name)
+DIST_ID=$(tofu -chdir=infra output -raw cloudfront_distribution_id)
+aws s3 sync web/dist/ "s3://${BUCKET}" --delete --exclude "catalogs/*" --exclude "imports/*" --exclude "private/*" --exclude "reference/*"
+aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Lint backend code"
+set -euo pipefail
+
+exec go vet ./... "$@"

@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Restart backend when Go files change"
+set -euo pipefail
+
+exec mise watch --restart dev "$@"

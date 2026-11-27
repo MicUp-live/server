@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Build ARM64 Lambda bootstrap binary and package into dist/lambda.zip"
+set -euo pipefail
+
+mkdir -p dist
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/bootstrap main.go
+(cd dist && touch -t 198001010000 bootstrap && python3 -m zipfile -c lambda.zip bootstrap)

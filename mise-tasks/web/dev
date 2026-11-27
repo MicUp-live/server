@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+#MISE description="Start frontend dev server"
+#MISE dir="web"
+set -euo pipefail
+
+exec npx vite --port 3000 "$@"

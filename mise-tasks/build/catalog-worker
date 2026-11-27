@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+#MISE description="Build ARM64 catalog worker and package into dist/catalog-worker.zip"
+set -euo pipefail
+
+mkdir -p dist/catalog-worker
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/catalog-worker/bootstrap ./cmd/catalog-worker
+(cd dist/catalog-worker && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../catalog-worker.zip bootstrap)

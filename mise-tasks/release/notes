@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Generate release notes from conventional commits"
+set -euo pipefail
+
+exec convco --config .versionrc changelog "$@"

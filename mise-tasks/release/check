@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Validate conventional commits in the checked-out history"
+set -euo pipefail
+
+exec convco --config .versionrc check "$@"

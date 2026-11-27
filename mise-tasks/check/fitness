@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
+#MISE description="Run architecture fitness checks (OpenAPI drift, token contract, formatting, vetting, hotspot audit)"
+#MISE depends=["web:install", "python:install"]
 set -euo pipefail
 
-# check-fitness.sh — Architecture fitness checks for MicUp.live
+# Architecture fitness checks for MicUp.live
 # Enforces Stage A maintainability guardrails:
 # 1. Canonical OpenAPI equivalence
 # 2. Frontend design token validation
@@ -9,11 +11,11 @@ set -euo pipefail
 # 4. Go code vetting (go vet)
 # 5. Enforced hotspot baseline & exception policy (scripts/hotspot-baseline.json)
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "${REPO_ROOT}"
 
 echo "=== 1. Checking Canonical OpenAPI Sync ==="
-python3 scripts/sync-openapi.py --check
+python3 mise-tasks/openapi/sync --check
 
 echo "=== 2. Checking Frontend Design Tokens ==="
 npm --prefix web run check:tokens

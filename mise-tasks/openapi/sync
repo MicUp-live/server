@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+#MISE description="Synchronize public OpenAPI YAML and JSON assets from canonical docs/openapi.yaml"
+#MISE depends=["python:install"]
 """
-sync-openapi.py — Synchronizes and validates OpenAPI specification artifacts.
+Synchronizes and validates OpenAPI specification artifacts.
 
 Canonical Source:
   docs/openapi.yaml
@@ -10,19 +12,20 @@ Generated Artifacts:
   web/public/openapi.json
 
 Usage:
-  python3 scripts/sync-openapi.py          # Generate/sync artifacts
-  python3 scripts/sync-openapi.py --check  # Verify artifacts match canonical source (fails with exit code 1 on drift)
+  mise run openapi:sync    # Generate/sync artifacts
+  mise run openapi:check   # Verify artifacts match canonical source (fails with exit code 1 on drift)
 """
 
-import sys
-import os
 import json
+import os
+import sys
 import yaml
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CANONICAL_SPEC = os.path.join(REPO_ROOT, "docs", "openapi.yaml")
 PUBLIC_YAML = os.path.join(REPO_ROOT, "web", "public", "openapi.yaml")
 PUBLIC_JSON = os.path.join(REPO_ROOT, "web", "public", "openapi.json")
+
 
 def load_canonical():
     if not os.path.exists(CANONICAL_SPEC):
@@ -32,6 +35,7 @@ def load_canonical():
         content = f.read()
     data = yaml.safe_load(content)
     return content, data
+
 
 def main():
     check_mode = "--check" in sys.argv
@@ -68,7 +72,7 @@ def main():
 
         if drift:
             sys.stderr.write("\nOpenAPI artifacts are out of sync with docs/openapi.yaml.\n")
-            sys.stderr.write("Run 'mise run openapi:sync' or 'python3 scripts/sync-openapi.py' to regenerate.\n")
+            sys.stderr.write("Run 'mise run openapi:sync' to regenerate.\n")
             sys.exit(1)
 
         print("OpenAPI artifacts are in sync with canonical docs/openapi.yaml.")
@@ -83,6 +87,7 @@ def main():
 
     print(f"Generated {PUBLIC_YAML}")
     print(f"Generated {PUBLIC_JSON}")
+
 
 if __name__ == "__main__":
     main()

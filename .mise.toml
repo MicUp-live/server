@@ -6,6 +6,7 @@ node = "22"
 python = "3.14"
 opentofu = "1.12.6"
 watchexec = "2.5.1"
+shellcheck = "0.11.0"
 "github:convco/convco" = "0.6.2"
 
 [env]
@@ -28,350 +29,70 @@ AUTH_SECRET="development-only-secret-change-me-12345"
 [settings]
 python.venv_stdlib = true
 
-# --- Backend Development ---
-[tasks.dev]
-description = "Start backend dev server"
-run = "go run main.go"
-sources = ["main.go", "internal/**/*.go", "go.mod", "go.sum"]
-
-[tasks."dev:watch"]
-description = "Restart backend when Go files change"
-run = "mise watch --restart dev"
-
-# --- Database ---
-[tasks."db:up"]
-description = "Start local PostgreSQL 16"
-run = "docker compose up -d --wait postgres"
-
-[tasks."db:down"]
-description = "Stop local PostgreSQL 16"
-run = "docker compose stop postgres"
-
-[tasks."pg:up"]
-description = "Start local PostgreSQL 16"
-run = "docker compose up -d --wait postgres"
-
-[tasks."pg:down"]
-description = "Stop local PostgreSQL 16"
-run = "docker compose stop postgres"
-
-[tasks."local:services"]
-description = "Start the local PostgreSQL and LocalStack (S3, SQS, SES) emulators"
-run = "docker compose up -d --wait"
-
-[tasks."local:bootstrap"]
-description = "Provision the local PostgreSQL schema and LocalStack resources"
-depends = ["local:services"]
-run = "go run ./cmd/local-bootstrap"
+# Leaf tasks live as executable files under mise-tasks/.
+# Only composite tasks (orchestrating other tasks sequentially or in parallel)
+# are defined below.
 
 [tasks."local:up"]
 description = "Start and provision the complete local production simulation"
 depends = ["local:bootstrap"]
 
-[tasks."local:down"]
-description = "Stop the complete local production simulation"
-run = "docker compose down"
-
-[tasks."local:reset"]
-description = "Delete local emulator data and recreate the production simulation"
-run = "docker compose down --volumes && mise run local:up"
-
-[tasks."local:logs"]
-description = "Follow logs from the local PostgreSQL and LocalStack services"
-run = "docker compose logs --follow postgres localstack"
-
-[tasks."local:verify"]
-description = "Verify the local PostgreSQL, S3, SQS, and SES resources"
-depends = ["local:bootstrap"]
-run = '''
-export AWS_ACCESS_KEY_ID=local
-export AWS_SECRET_ACCESS_KEY=local
-docker compose exec -T postgres pg_isready -U micup -d micup >/dev/null
-aws s3api head-bucket --bucket micup-app-local --endpoint-url http://127.0.0.1:4566
-aws sqs get-queue-url --queue-name micup-local-catalog-build --endpoint-url http://127.0.0.1:4566 --output text >/dev/null
-aws sqs get-queue-url --queue-name micup-local-import-jobs --endpoint-url http://127.0.0.1:4566 --output text >/dev/null
-aws ses get-identity-verification-attributes --identities noreply@micup.live --endpoint-url http://127.0.0.1:4566 --output text >/dev/null
-echo "Local production simulation is ready."
-'''
-
-# --- Testing & Quality ---
-[tasks."python:install"]
-description = "Install Python tooling dependencies into the project virtualenv"
-run = "python -m pip install -r requirements.txt"
-
-[tasks."test:packages"]
-description = "Run all Go package tests against local PostgreSQL 16"
-depends = ["pg:up"]
-run = "go test -count=1 ./..."
-
-[tasks."test:postgres"]
-description = "Run PostgreSQL store integration tests against local PostgreSQL 16"
-depends = ["pg:up"]
-run = "go test -count=1 ./internal/store/postgres ./internal/store/backend"
-
 [tasks.test]
 description = "Run all backend tests"
 depends = ["test:packages"]
-run = "true"
-
-[tasks."web:test"]
-description = "Run frontend unit tests"
-dir = "web"
-depends = ["web:install"]
-run = "npm test"
 
 [tasks."test:all"]
 description = "Run both backend and frontend tests"
-depends = ["test", "web:test"]
-
-[tasks.lint]
-description = "Lint backend code"
-run = "go vet ./..."
-
-# --- Frontend Tasks ---
-[tasks."web:install"]
-description = "Install locked frontend dependencies"
-dir = "web"
-run = "npm ci"
-
-[tasks."web:dev"]
-description = "Start frontend dev server"
-dir = "web"
-run = "npx vite --port 3000"
-
-[tasks."web:build"]
-description = "Build frontend for production"
-dir = "web"
-depends = ["web:install"]
-run = "npm run build"
-
-# --- Production Build & Packaging ---
-[tasks."build:server"]
-description = "Build production Go binary"
-run = "go build -ldflags=\"-s -w\" -o dist/micup-server main.go"
-
-[tasks."build:lambda"]
-description = "Build ARM64 Lambda bootstrap binary and package into dist/lambda.zip"
-run = "mkdir -p dist && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags=\"-s -w\" -o dist/bootstrap main.go && (cd dist && touch -t 198001010000 bootstrap && python3 -m zipfile -c lambda.zip bootstrap)"
-
-[tasks."build:catalog-worker"]
-description = "Build ARM64 catalog worker and package into dist/catalog-worker.zip"
-run = "mkdir -p dist/catalog-worker && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags=\"-s -w\" -o dist/catalog-worker/bootstrap ./cmd/catalog-worker && (cd dist/catalog-worker && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../catalog-worker.zip bootstrap)"
-
-[tasks."build:import-worker"]
-description = "Build ARM64 Assistant Import worker and package into dist/import-worker.zip"
-run = "mkdir -p dist/import-worker && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags=\"-s -w\" -o dist/import-worker/bootstrap ./cmd/import-worker && (cd dist/import-worker && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../import-worker.zip bootstrap)"
-
-[tasks."build:compaction-dispatcher"]
-description = "Build ARM64 catalog compaction dispatcher Lambda package"
-run = "mkdir -p dist/compaction-dispatcher && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags=\"-s -w\" -o dist/compaction-dispatcher/bootstrap ./cmd/compaction-dispatcher && (cd dist/compaction-dispatcher && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../compaction-dispatcher.zip bootstrap)"
-
-[tasks."build:catalog-gc"]
-description = "Build ARM64 catalog garbage collection Lambda package"
-run = "mkdir -p dist/catalog-gc && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags=\"-s -w\" -o dist/catalog-gc/bootstrap ./cmd/catalog-gc && (cd dist/catalog-gc && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../catalog-gc.zip bootstrap)"
-
-[tasks."build:import-reconciler"]
-description = "Build ARM64 import reconciler Lambda package"
-run = "mkdir -p dist/import-reconciler && CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -ldflags=\"-s -w\" -o dist/import-reconciler/bootstrap ./cmd/import-reconciler && (cd dist/import-reconciler && touch -t 198001010000 bootstrap && python3 -m zipfile -c ../import-reconciler.zip bootstrap)"
-
-[tasks."catalog:gc"]
-description = "Report unreferenced catalog versions (use --dry-run=false to delete after the grace period)"
-run = "go run ./cmd/catalog-gc"
-
-[tasks."catalog:compact"]
-description = "Check and enqueue compaction jobs for songbooks with pending changes"
-run = "go run ./cmd/compaction-dispatcher"
-
-[tasks."import:reconcile"]
-description = "Scan and reconcile undispatched import jobs"
-run = "go run ./cmd/import-reconciler"
+run = [{ tasks = ["test", "web:test"] }]
 
 [tasks."build:all"]
 description = "Build frontend, backend, and Lambda package"
-depends = ["web:build", "build:server", "build:lambda", "build:catalog-worker", "build:import-worker", "build:compaction-dispatcher", "build:catalog-gc", "build:import-reconciler"]
-
-# --- Local Lambda Runtime ---
-[tasks."build:lambda-local"]
-description = "Build x86_64 Lambda entrypoints for this workstation's SAM runtime"
-run = '''
-mkdir -p dist/local/api dist/local/catalog-worker dist/local/import-worker dist/local/compaction-dispatcher dist/local/catalog-gc dist/local/import-reconciler
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/api/bootstrap main.go
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/catalog-worker/bootstrap ./cmd/catalog-worker
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/import-worker/bootstrap ./cmd/import-worker
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/compaction-dispatcher/bootstrap ./cmd/compaction-dispatcher
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/catalog-gc/bootstrap ./cmd/catalog-gc
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/local/import-reconciler/bootstrap ./cmd/import-reconciler
-'''
-
-[tasks."local:sam:validate"]
-description = "Validate the local-only SAM Lambda description"
-run = "sam validate --lint --template-file local/sam-template.yaml"
-
-[tasks."local:lambda:api"]
-description = "Serve the API through the local Lambda and HTTP API emulator"
-depends = ["local:bootstrap", "build:lambda-local"]
-run = "AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local sam local start-api --template-file local/sam-template.yaml --docker-network micup-local --env-vars local/sam-env.json --region us-east-2 --warm-containers lazy --port 9000"
-
-[tasks."local:lambda:catalog"]
-description = "Invoke the catalog Lambda with a production-shaped SQS event"
-depends = ["local:bootstrap", "build:lambda-local"]
-run = "AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local sam local invoke CatalogWorker --template-file local/sam-template.yaml --docker-network micup-local --env-vars local/sam-env.json --region us-east-2 --event local/events/catalog-sqs.json"
-
-[tasks."local:lambda:import"]
-description = "Invoke the import Lambda with a production-shaped SQS event"
-depends = ["local:bootstrap", "build:lambda-local"]
-run = "AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local sam local invoke ImportWorker --template-file local/sam-template.yaml --docker-network micup-local --env-vars local/sam-env.json --region us-east-2 --event local/events/import-sqs.json"
-
-[tasks."local:lambda:compact"]
-description = "Invoke the compaction Lambda with a scheduled EventBridge event"
-depends = ["local:bootstrap", "build:lambda-local"]
-run = "AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local sam local invoke CompactionDispatcher --template-file local/sam-template.yaml --docker-network micup-local --env-vars local/sam-env.json --region us-east-2 --event local/events/eventbridge-scheduled.json"
-
-[tasks."local:lambda:gc"]
-description = "Invoke the catalog GC Lambda with a scheduled EventBridge event"
-depends = ["local:bootstrap", "build:lambda-local"]
-run = "AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local sam local invoke CatalogGC --template-file local/sam-template.yaml --docker-network micup-local --env-vars local/sam-env.json --region us-east-2 --event local/events/catalog-gc.json"
-
-[tasks."local:lambda:reconcile"]
-description = "Invoke the import reconciler Lambda with a scheduled EventBridge event"
-depends = ["local:bootstrap", "build:lambda-local"]
-run = "AWS_ACCESS_KEY_ID=local AWS_SECRET_ACCESS_KEY=local sam local invoke ImportReconciler --template-file local/sam-template.yaml --docker-network micup-local --env-vars local/sam-env.json --region us-east-2 --event local/events/eventbridge-scheduled.json"
-
-
-[tasks."openapi:sync"]
-description = "Synchronize public OpenAPI YAML and JSON assets from canonical docs/openapi.yaml"
-depends = ["python:install"]
-run = "python3 scripts/sync-openapi.py"
+run = [
+  { tasks = [
+    "web:build",
+    "build:server",
+    "build:lambda",
+    "build:catalog-worker",
+    "build:import-worker",
+    "build:compaction-dispatcher",
+    "build:catalog-gc",
+    "build:import-reconciler",
+  ] },
+]
 
 [tasks."openapi:check"]
 description = "Verify public OpenAPI assets match canonical docs/openapi.yaml without drift"
-depends = ["python:install"]
-run = "python3 scripts/sync-openapi.py --check"
-
-[tasks."check:fitness"]
-description = "Run architecture fitness checks (OpenAPI drift, token contract, formatting, vetting, hotspot audit)"
-depends = ["web:install", "python:install"]
-run = "./scripts/check-fitness.sh"
+run = [{ task = "openapi:sync --check" }]
 
 [tasks."check:all"]
 description = "Verify fitness checks, tests, and production build readiness"
 depends = ["check:fitness", "build:all"]
-run = "mise run test:all"
+run = [{ task = "test:all" }]
 
-# --- CI and releases ---
 [tasks."ci:verify"]
 description = "Run the complete CI verification suite against local AWS emulators"
 depends = ["local:bootstrap"]
-run = "mise run check:all"
-
-[tasks."ci:infra:plan"]
-description = "Preview the production OpenTofu plan with read-only credentials and no state lock"
-depends = ["tofu:init", "build:all"]
-run = "tofu -chdir=infra plan -lock=false -input=false -no-color -compact-warnings"
-
-[tasks."ci:infra:validate"]
-description = "Validate OpenTofu configuration without cloud credentials or remote state"
-run = ["tofu -chdir=infra init -backend=false -input=false", "tofu -chdir=infra validate"]
-
-[tasks."release:check"]
-description = "Validate conventional commits in the checked-out history"
-run = "convco --config .versionrc check"
-
-[tasks."release:version"]
-description = "Print the SemVer version implied by conventional commits"
-run = "convco --config .versionrc version --bump"
-
-[tasks."release:notes"]
-description = "Generate release notes from conventional commits"
-run = "convco --config .versionrc changelog"
-
-# --- Infrastructure (OpenTofu) ---
-[tasks."tofu:init"]
-description = "Initialize OpenTofu working directory"
-run = "tofu -chdir=infra init"
-
-[tasks."tofu:validate"]
-description = "Validate OpenTofu configuration files"
-run = "tofu -chdir=infra validate"
+run = [{ task = "check:all" }]
 
 [tasks."infra:validate"]
 description = "Validate OpenTofu infrastructure configuration"
-depends = ["tofu:init", "tofu:validate"]
-
-[tasks."tofu:plan"]
-description = "Show OpenTofu execution plan"
-depends = ["tofu:init"]
-run = "tofu -chdir=infra plan"
-
-[tasks."tofu:apply"]
-description = "Apply OpenTofu infrastructure changes"
-depends = ["tofu:init"]
-run = "tofu -chdir=infra apply"
-
-[tasks."tofu:state"]
-description = "List all managed OpenTofu resources"
-depends = ["tofu:init"]
-run = "tofu -chdir=infra state list"
-
-[tasks."tofu:show"]
-description = "Show detailed state of all deployed resources"
-depends = ["tofu:init"]
-run = "tofu -chdir=infra show"
-
-[tasks."tofu:output"]
-description = "Display infrastructure outputs"
-depends = ["tofu:init"]
-run = "tofu -chdir=infra output"
-
-# --- Deployment ---
-[tasks."deploy:web"]
-description = "Build and deploy static frontend to S3 and CloudFront"
-depends = ["tofu:init", "web:build"]
-run = '''
-BUCKET=$(tofu -chdir=infra output -raw s3_bucket_name)
-DIST_ID=$(tofu -chdir=infra output -raw cloudfront_distribution_id)
-aws s3 sync web/dist/ "s3://${BUCKET}" --delete --exclude "catalogs/*" --exclude "imports/*" --exclude "private/*" --exclude "reference/*"
-aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/*"
-'''
+run = [{ task = "tofu:init" }, { task = "tofu:validate" }]
 
 [tasks."deploy:production"]
 description = "Build and deploy all production infrastructure and application assets"
 depends = ["tofu:init", "build:all"]
-run = "tofu -chdir=infra apply -auto-approve && mise run deploy:web"
-
-# --- Reference Catalog Compilation & CDN Distribution ---
-[tasks."reference:compile"]
-description = "Compile canonical reference catalog (reusing cached immutable sources and checking rolling sources)"
-run = '''
-export REFERENCE_S3_BUCKET="${REFERENCE_S3_BUCKET:-$(tofu -chdir=infra output -raw s3_bucket_name 2>/dev/null || echo "micup-app-production-936ec344")}"
-go run ./cmd/compile-reference -out ./web/public/reference/v1 -archive-dir ./dist/reference/v1/sources
-'''
-
-[tasks."reference:sync"]
-description = "Sync compiled reference dictionary and archived PDF/CSV sources to S3 and invalidate CloudFront cache"
-depends = ["tofu:init"]
-run = '''
-BUCKET=$(tofu -chdir=infra output -raw s3_bucket_name 2>/dev/null || echo "micup-app-production-936ec344")
-DIST_ID=$(tofu -chdir=infra output -raw cloudfront_distribution_id 2>/dev/null || echo "E1OYLRRPB0TCML")
-aws s3 sync ./web/public/reference/v1/ "s3://${BUCKET}/reference/v1/" --exclude "sources/*" --content-type application/json --content-encoding gzip
-if [ -d ./dist/reference/v1/sources ]; then
-  aws s3 sync ./dist/reference/v1/sources/ "s3://${BUCKET}/reference/v1/sources/"
-fi
-aws cloudfront create-invalidation --distribution-id "${DIST_ID}" --paths "/reference/*"
-'''
+run = [
+  { task = "db:migrate:production" },
+  { task = "tofu:apply -auto-approve" },
+  { task = "deploy:web" },
+]
 
 [tasks."reference:update"]
 description = "Fetch live vendor reference data, compile dictionary, and publish to CDN"
 depends = ["reference:compile"]
-run = "mise run reference:sync"
-
-# --- Orchestration ---
-[tasks."local:workers"]
-description = "Poll and process local SQS queues for import jobs and catalog builds"
-depends = ["local:bootstrap"]
-run = "mise exec -- sh -c 'go run ./cmd/import-worker -poll & go run ./cmd/catalog-worker -poll & wait'"
+run = [{ task = "reference:sync" }]
 
 [tasks."dev:all"]
 description = "Start the local AWS simulation, backend, frontend, and background workers"
 depends = ["local:bootstrap"]
-run = "mise run dev:watch ::: web:dev ::: local:workers"
+run = [{ tasks = ["dev:watch", "web:dev", "local:workers"] }]

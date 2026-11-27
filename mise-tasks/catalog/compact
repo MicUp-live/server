@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Check and enqueue compaction jobs for songbooks with pending changes"
+set -euo pipefail
+
+exec go run ./cmd/compaction-dispatcher "$@"

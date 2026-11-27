@@ -18,14 +18,15 @@ import {
     getFavoriteArtists,
     toggleFavoriteArtist,
 } from '../../utils/favoritesStore.js'
-import { getSingerRequests } from '../../utils/singerRequestsStore.js'
-import {
-    sendSingerNotification,
-    requestScreenWakeLock,
-    releaseScreenWakeLock,
-    areStageAlertsEnabled,
-} from '../../utils/notifications.js'
+import { releaseScreenWakeLock } from '../../utils/notifications.js'
 import { getShowStatusInfo, getStatusTransitionToast } from '../../utils/showStatus.js'
+import {
+    fetchInitialBookContext,
+    formatLoadError,
+    hasEventMetadataUpdate,
+    mergeEventQueueUpdate,
+    resolveActiveQueueStatus,
+} from './publicBookHelpers.js'
 
 function playBuzzChime() {
     try {
@@ -92,57 +93,36 @@ export function PublicBook({ id, code, eventId, eventMode }) {
         setInfoError('')
         setEvent(null)
 
-        const loadInitialContext = async () => {
+        const applyContext = (ctx) => {
+            if (cancelled) return
+            if (ctx.eventData) setEvent(ctx.eventData)
+            if (!ctx.songbookId) {
+                throw new Error('No songbook specified')
+            }
+            setResolvedSongbookId(ctx.songbookId)
+        }
+
+        const handleContextError = (err) => {
+            if (cancelled) return
+            setInfoError(formatLoadError(err, code))
+        }
+
+        const loadInitialContext = () => {
             try {
-                let targetSongbookId = id
-                let activeEvent = null
-
-                if (eventId || (eventMode && id)) {
-                    const targetEventId = eventId || id
-                    const eventData = await api.get(`/events/${encodeURIComponent(targetEventId)}/public`)
-                    if (cancelled) return
-                    activeEvent = eventData
-                    setEvent(eventData)
-                    targetSongbookId = eventData.public_songbook_id || eventData.songbook_id
-                } else if (code) {
-                    const eventData = await api.get(`/join/${encodeURIComponent(code.toUpperCase())}`)
-                    if (cancelled) return
-                    activeEvent = eventData
-                    setEvent(eventData)
-                    targetSongbookId = eventData.public_songbook_id || eventData.songbook_id
-                } else if (typeof window !== 'undefined') {
-                    const params = new URLSearchParams(window.location.search)
-                    const eventParam = params.get('event') || params.get('eventId')
-                    if (eventParam) {
-                        try {
-                            const eventData = await api.get(`/events/${encodeURIComponent(eventParam)}/public`)
-                            if (!cancelled && eventData) {
-                                activeEvent = eventData
-                                setEvent(eventData)
-                                if (!targetSongbookId) {
-                                    targetSongbookId = eventData.public_songbook_id || eventData.songbook_id
-                                }
-                            }
-                        } catch {
-                            // Event fetch failed, continue loading songbook
-                        }
-                    }
+                const result = fetchInitialBookContext({ id, code, eventId, eventMode })
+                if (typeof result?.then !== 'function') {
+                    applyContext(result)
+                    if (!cancelled) setLoadingInfo(false)
+                    return
                 }
-
-                if (!targetSongbookId) {
-                    throw new Error('No songbook specified')
-                }
-                if (!cancelled) {
-                    setResolvedSongbookId(targetSongbookId)
-                }
+                result
+                    .then(applyContext)
+                    .catch(handleContextError)
+                    .finally(() => {
+                        if (!cancelled) setLoadingInfo(false)
+                    })
             } catch (err) {
-                if (cancelled) return
-                if (err.status === 404) {
-                    setInfoError(code ? `Show "${code}" not found or has ended` : 'Songbook or show not found')
-                } else {
-                    setInfoError(err.message || 'Failed to load songs')
-                }
-            } finally {
+                handleContextError(err)
                 if (!cancelled) setLoadingInfo(false)
             }
         }
@@ -191,16 +171,8 @@ export function PublicBook({ id, code, eventId, eventMode }) {
         const q = data.queue || []
         setQueueCount(q.length)
 
-        if (event && (data.event_status || data.announcement !== undefined || data.tip_url !== undefined || data.rotation_mode !== undefined)) {
-            setEvent(prev => prev ? {
-                ...prev,
-                status: data.event_status || prev.status,
-                announcement: data.announcement !== undefined ? data.announcement : prev.announcement,
-                tip_url: data.tip_url !== undefined ? data.tip_url : prev.tip_url,
-                rotation_mode: data.rotation_mode !== undefined ? data.rotation_mode : prev.rotation_mode,
-                auto_accept: data.auto_accept !== undefined ? data.auto_accept : prev.auto_accept,
-                submission_delay: data.submission_delay !== undefined ? data.submission_delay : prev.submission_delay,
-            } : prev)
+        if (event && hasEventMetadataUpdate(data)) {
+            setEvent(prev => mergeEventQueueUpdate(prev, data))
         }
 
         const targetKey = event?.id
@@ -211,50 +183,12 @@ export function PublicBook({ id, code, eventId, eventMode }) {
             setMyActiveStatus(null)
             return
         }
-        const myReqs = getSingerRequests(targetKey)
-        if (myReqs.length > 0) {
-            const activeMatch = q.find(item => myReqs.some(m => m.id === item.id))
-            if (activeMatch) {
-                requestScreenWakeLock()
-                const index = q.indexOf(activeMatch)
-                if (activeMatch.status === 'up_next') {
-                    setMyActiveStatus('🎤 CALLED TO STAGE!')
-                    if (!buzzedRequestsRef.current.has(activeMatch.id)) {
-                        buzzedRequestsRef.current.add(activeMatch.id)
-                        if (areStageAlertsEnabled()) {
-                            playBuzzChime()
-                            if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-                                try { navigator.vibrate([300, 100, 300, 100, 500]) } catch {}
-                            }
-                            sendSingerNotification("🎤 YOU'RE CALLED TO THE STAGE!", {
-                                body: `Head to the stage now for "${activeMatch.song_title || 'your anthem'}"!`,
-                                tag: `micup-upnext-${activeMatch.id}`,
-                            })
-                        }
-                        showToast("🎤 BUZZ! You're CALLED TO THE STAGE! Head to the stage!", 'info')
-                    }
-                } else {
-                    if (index === 1 && !buzzedRequestsRef.current.has(`${activeMatch.id}-ondeck`)) {
-                        buzzedRequestsRef.current.add(`${activeMatch.id}-ondeck`)
-                        if (areStageAlertsEnabled()) {
-                            playBuzzChime()
-                            sendSingerNotification("⚠️ YOU'RE ON DECK!", {
-                                body: `You are next after this song for "${activeMatch.song_title}". Head toward the stage!`,
-                                tag: `micup-ondeck-${activeMatch.id}`,
-                            })
-                        }
-                        showToast(`⚠️ You're ON DECK (1 song away) for "${activeMatch.song_title}"!`, 'info')
-                    }
-                    setMyActiveStatus(`You: #${index + 1} in line`)
-                }
-            } else {
-                releaseScreenWakeLock()
-                setMyActiveStatus(null)
-            }
-        } else {
+
+        const nextStatus = resolveActiveQueueStatus(q, targetKey, buzzedRequestsRef.current, playBuzzChime)
+        if (!nextStatus) {
             releaseScreenWakeLock()
-            setMyActiveStatus(null)
         }
+        setMyActiveStatus(nextStatus)
     }, [event?.id, event?.status])
 
     useQueuePolling({

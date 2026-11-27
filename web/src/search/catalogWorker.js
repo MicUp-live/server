@@ -114,192 +114,210 @@ export const artistSearchOptions = {
   weights: { prefix: 1.0, fuzzy: 0.15 },
 };
 
+async function fetchCatalogPayload(searchUrl) {
+  const res = await fetch(searchUrl);
+  if (!res.ok) {
+    throw new Error(`Failed to load catalog search asset: HTTP ${res.status}`);
+  }
+
+  const contentType = res.headers.get('content-type') || '';
+  if (contentType.includes('json')) {
+    return res.json();
+  }
+  if (typeof DecompressionStream !== 'undefined') {
+    const ds = new DecompressionStream('gzip');
+    const stream = res.body.pipeThrough(ds);
+    const text = await new Response(stream).text();
+    return JSON.parse(text);
+  }
+  return res.json();
+}
+
+function indexTracks(tracks) {
+  artistMap = new Map();
+  artistSongsMap = new Map();
+  trackMap = new Map();
+  canonicalTrackMap = new Map();
+
+  for (const track of tracks) {
+    const artist = (track.artist || 'Unknown Artist').trim();
+    const norm = normalizeString(artist);
+    if (!artistMap.has(norm)) {
+      artistMap.set(norm, { artist, norm, count: 0 });
+      artistSongsMap.set(norm, []);
+    }
+    artistMap.get(norm).count++;
+    artistSongsMap.get(norm).push(track);
+
+    const key = songKey(track.artist, track.title || track.label);
+    trackMap.set(key, track);
+    if (track.song_id) {
+      trackMap.set(track.song_id, track);
+    }
+    if (track.canonical_id && !canonicalTrackMap.has(track.canonical_id)) {
+      canonicalTrackMap.set(track.canonical_id, track);
+    }
+  }
+}
+
+async function handleInit(id, { searchUrl }) {
+  const data = await fetchCatalogPayload(searchUrl);
+  allTracks = data.songs || [];
+
+  // Build track MiniSearch index
+  searchIndex = new MiniSearch({
+    idField: 'song_id',
+    fields: ['artist', 'title'],
+    storeFields: ['song_id', 'artist', 'title', 'label', 'genre', 'disc', 'source', 'video_url', 'canonical_id', 'is_custom'],
+    searchOptions: trackSearchOptions,
+  });
+
+  await searchIndex.addAllAsync(allTracks, { chunkSize: 2000 });
+
+  // Build artist aggregations and track maps
+  indexTracks(allTracks);
+
+  artistGroups = Array.from(artistMap.values()).sort((a, b) =>
+    a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+  );
+
+  // Build artist MiniSearch index
+  artistSearchIndex = new MiniSearch({
+    idField: 'norm',
+    fields: ['artist'],
+    storeFields: ['artist', 'norm', 'count'],
+    searchOptions: artistSearchOptions,
+  });
+
+  await artistSearchIndex.addAllAsync(artistGroups, { chunkSize: 1000 });
+
+  self.postMessage({
+    type: 'INIT_DONE',
+    id,
+    total: allTracks.length,
+    artists: artistGroups,
+  });
+}
+
+function handleSearch(id, { query, limit = 200 }) {
+  if (!query || !query.trim() || !searchIndex) {
+    self.postMessage({ type: 'SEARCH_RESULTS', id, results: [] });
+    return;
+  }
+  const results = rankSongResults(searchIndex.search(query), query);
+  self.postMessage({
+    type: 'SEARCH_RESULTS',
+    id,
+    results: results.slice(0, limit),
+  });
+}
+
+function appendSongMatchedArtists(combined, seenNorms, query, limit) {
+  if (!searchIndex || combined.length >= limit) {
+    return;
+  }
+  const songMatches = rankSongResults(searchIndex.search(query), query);
+  for (const song of songMatches) {
+    const norm = normalizeString(song.artist);
+    if (!norm || seenNorms.has(norm)) {
+      continue;
+    }
+    seenNorms.add(norm);
+    const grp = artistMap.get(norm);
+    if (grp) {
+      combined.push({
+        id: grp.norm,
+        norm: grp.norm,
+        artist: grp.artist,
+        count: grp.count,
+        matchedBySong: true,
+      });
+    }
+    if (combined.length >= limit) {
+      break;
+    }
+  }
+}
+
+function handleSearchArtists(id, { query, limit = 100 }) {
+  if (!query || !query.trim() || !artistSearchIndex) {
+    self.postMessage({ type: 'SEARCH_ARTISTS_RESULTS', id, results: [] });
+    return;
+  }
+  const rawArtistMatches = artistSearchIndex.search(query);
+  const artistMatches = rankArtistResults(rawArtistMatches, query);
+  const seenNorms = new Set(artistMatches.map((a) => a.norm));
+  const combined = [...artistMatches];
+
+  appendSongMatchedArtists(combined, seenNorms, query, limit);
+
+  self.postMessage({
+    type: 'SEARCH_ARTISTS_RESULTS',
+    id,
+    results: combined.slice(0, limit),
+  });
+}
+
+function handleGetArtistSongs(id, { artistNorm }) {
+  const songs = artistSongsMap.get(artistNorm) || [];
+  self.postMessage({
+    type: 'GET_ARTIST_SONGS_RESULTS',
+    id,
+    songs,
+  });
+}
+
+function resolveFavoriteTrack(fav) {
+  const byId = fav.song_id ? trackMap.get(fav.song_id) : null;
+  if (byId) {
+    return byId;
+  }
+  const byKey = trackMap.get(songKey(fav.artist, fav.title));
+  if (byKey) {
+    return byKey;
+  }
+  return fav.canonical_id ? canonicalTrackMap.get(fav.canonical_id) : null;
+}
+
+function handleResolveFavorites(id, { favorites = [] }) {
+  const inBookTracks = [];
+  const offBookFavorites = [];
+
+  for (const fav of favorites) {
+    const track = resolveFavoriteTrack(fav);
+    if (track) {
+      inBookTracks.push(track);
+    } else {
+      offBookFavorites.push(fav);
+    }
+  }
+
+  self.postMessage({
+    type: 'RESOLVE_FAVORITES_RESULTS',
+    id,
+    inBookTracks,
+    offBookFavorites,
+  });
+}
+
+const MESSAGE_HANDLERS = {
+  INIT: handleInit,
+  SEARCH: handleSearch,
+  SEARCH_ARTISTS: handleSearchArtists,
+  GET_ARTIST_SONGS: handleGetArtistSongs,
+  RESOLVE_FAVORITES: handleResolveFavorites,
+};
+
 if (typeof self !== 'undefined') {
   self.onmessage = async (e) => {
     const { type, id, ...payload } = e.data;
 
     try {
-      switch (type) {
-        case 'INIT': {
-          const { searchUrl } = payload;
-          const res = await fetch(searchUrl);
-          if (!res.ok) {
-            throw new Error(`Failed to load catalog search asset: HTTP ${res.status}`);
-          }
-
-          let data;
-          const contentType = res.headers.get('content-type') || '';
-          if (contentType.includes('json')) {
-            data = await res.json();
-          } else if (typeof DecompressionStream !== 'undefined') {
-            const ds = new DecompressionStream('gzip');
-            const stream = res.body.pipeThrough(ds);
-            const text = await new Response(stream).text();
-            data = JSON.parse(text);
-          } else {
-            data = await res.json();
-          }
-
-          allTracks = data.songs || [];
-
-          // Build track MiniSearch index
-          searchIndex = new MiniSearch({
-            idField: 'song_id',
-            fields: ['artist', 'title'],
-            storeFields: ['song_id', 'artist', 'title', 'label', 'genre', 'disc', 'source', 'video_url', 'canonical_id', 'is_custom'],
-            searchOptions: trackSearchOptions,
-          });
-
-          await searchIndex.addAllAsync(allTracks, { chunkSize: 2000 });
-
-          // Build artist aggregations and track maps
-          artistMap = new Map();
-          artistSongsMap = new Map();
-          trackMap = new Map();
-          canonicalTrackMap = new Map();
-
-          for (const track of allTracks) {
-            const artist = (track.artist || 'Unknown Artist').trim();
-            const norm = normalizeString(artist);
-            if (!artistMap.has(norm)) {
-              artistMap.set(norm, { artist, norm, count: 0 });
-              artistSongsMap.set(norm, []);
-            }
-            artistMap.get(norm).count++;
-            artistSongsMap.get(norm).push(track);
-
-            const key = songKey(track.artist, track.title || track.label);
-            trackMap.set(key, track);
-            if (track.song_id) {
-              trackMap.set(track.song_id, track);
-            }
-            if (track.canonical_id && !canonicalTrackMap.has(track.canonical_id)) {
-              canonicalTrackMap.set(track.canonical_id, track);
-            }
-          }
-
-          artistGroups = Array.from(artistMap.values()).sort((a, b) =>
-            a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
-          );
-
-          // Build artist MiniSearch index
-          artistSearchIndex = new MiniSearch({
-            idField: 'norm',
-            fields: ['artist'],
-            storeFields: ['artist', 'norm', 'count'],
-            searchOptions: artistSearchOptions,
-          });
-
-          await artistSearchIndex.addAllAsync(artistGroups, { chunkSize: 1000 });
-
-          self.postMessage({
-            type: 'INIT_DONE',
-            id,
-            total: allTracks.length,
-            artists: artistGroups,
-          });
-          break;
-        }
-
-        case 'SEARCH': {
-          const { query, limit = 200 } = payload;
-          if (!query || !query.trim() || !searchIndex) {
-            self.postMessage({ type: 'SEARCH_RESULTS', id, results: [] });
-            return;
-          }
-          const results = rankSongResults(searchIndex.search(query), query);
-          self.postMessage({
-            type: 'SEARCH_RESULTS',
-            id,
-            results: results.slice(0, limit),
-          });
-          break;
-        }
-
-        case 'SEARCH_ARTISTS': {
-          const { query, limit = 100 } = payload;
-          if (!query || !query.trim() || !artistSearchIndex) {
-            self.postMessage({ type: 'SEARCH_ARTISTS_RESULTS', id, results: [] });
-            return;
-          }
-          const rawArtistMatches = artistSearchIndex.search(query);
-          const artistMatches = rankArtistResults(rawArtistMatches, query);
-          const seenNorms = new Set(artistMatches.map((a) => a.norm));
-          const combined = [...artistMatches];
-
-          if (searchIndex && combined.length < limit) {
-            const songMatches = rankSongResults(searchIndex.search(query), query);
-            for (const song of songMatches) {
-              const norm = normalizeString(song.artist);
-              if (norm && !seenNorms.has(norm)) {
-                seenNorms.add(norm);
-                const grp = artistMap.get(norm);
-                if (grp) {
-                  combined.push({
-                    id: grp.norm,
-                    norm: grp.norm,
-                    artist: grp.artist,
-                    count: grp.count,
-                    matchedBySong: true,
-                  });
-                }
-                if (combined.length >= limit) break;
-              }
-            }
-          }
-
-          self.postMessage({
-            type: 'SEARCH_ARTISTS_RESULTS',
-            id,
-            results: combined.slice(0, limit),
-          });
-          break;
-        }
-
-        case 'GET_ARTIST_SONGS': {
-          const { artistNorm } = payload;
-          const songs = artistSongsMap.get(artistNorm) || [];
-          self.postMessage({
-            type: 'GET_ARTIST_SONGS_RESULTS',
-            id,
-            songs,
-          });
-          break;
-        }
-
-        case 'RESOLVE_FAVORITES': {
-          const { favorites = [] } = payload;
-          const inBookTracks = [];
-          const offBookFavorites = [];
-
-          for (const fav of favorites) {
-            const key = songKey(fav.artist, fav.title);
-            let track = fav.song_id ? trackMap.get(fav.song_id) : null;
-            if (!track) {
-              track = trackMap.get(key);
-            }
-            if (!track && fav.canonical_id) {
-              track = canonicalTrackMap.get(fav.canonical_id);
-            }
-            if (track) {
-              inBookTracks.push(track);
-            } else {
-              offBookFavorites.push(fav);
-            }
-          }
-
-          self.postMessage({
-            type: 'RESOLVE_FAVORITES_RESULTS',
-            id,
-            inBookTracks,
-            offBookFavorites,
-          });
-          break;
-        }
-
-        default:
-          throw new Error(`Unknown worker action: ${type}`);
+      const handler = MESSAGE_HANDLERS[type];
+      if (!handler) {
+        throw new Error(`Unknown worker action: ${type}`);
       }
+      await handler(id, payload);
     } catch (err) {
       self.postMessage({
         type: 'ERROR',

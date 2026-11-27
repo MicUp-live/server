@@ -72,19 +72,23 @@ export function SongVersionPicker({ versions = [], selectedVersionId = '', onSel
                     flexDirection: 'column',
                     gap: 'var(--space-1)',
                 }}>
-                    <label style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 'var(--space-2)',
-                        padding: 'var(--space-2)',
-                        borderRadius: 'var(--radius-sm)',
-                        cursor: 'pointer',
-                        fontSize: 'var(--text-xs)',
-                        color: 'var(--color-text)',
-                        background: !selectedVersionId ? 'var(--color-surface)' : 'transparent',
-                        border: !selectedVersionId ? '1px solid var(--color-border)' : '1px solid transparent',
-                    }}>
+                    <label
+                        htmlFor="song-version-host-choice"
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 'var(--space-2)',
+                            padding: 'var(--space-2)',
+                            borderRadius: 'var(--radius-sm)',
+                            cursor: 'pointer',
+                            fontSize: 'var(--text-xs)',
+                            color: 'var(--color-text)',
+                            background: !selectedVersionId ? 'var(--color-surface)' : 'transparent',
+                            border: !selectedVersionId ? '1px solid var(--color-border)' : '1px solid transparent',
+                        }}
+                    >
                         <input
+                            id="song-version-host-choice"
                             type="radio"
                             name="song-version-choice"
                             value=""
@@ -92,18 +96,22 @@ export function SongVersionPicker({ versions = [], selectedVersionId = '', onSel
                             onChange={() => onSelectVersionId('')}
                             style={{ accentColor: 'var(--color-accent)', flexShrink: 0 }}
                         />
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '2px' }}>
-                            <span style={{ fontWeight: 'var(--font-semibold)' }}>Host's Choice / Best Available</span>
-                            <span style={{ color: 'var(--color-text-dim)' }}>Let the host pick the best backing track</span>
-                        </div>
+                        <span style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontWeight: 'var(--font-semibold)' }}>
+                            Host's Choice / Best Available
+                            <span style={{ fontWeight: 'var(--font-normal)', color: 'var(--color-text-dim)' }}>
+                                Let the host pick the best backing track
+                            </span>
+                        </span>
                     </label>
 
                     {described.map(({ id: vId, info }, idx) => {
                         const isSelected = Boolean(selectedVersionId) && selectedVersionId === vId
                         const showDiscPill = Boolean(info.disc && info.disc !== info.label)
+                        const radioId = `song-version-option-${idx}`
                         return (
                             <label
                                 key={vId || idx}
+                                htmlFor={radioId}
                                 style={{
                                     display: 'flex',
                                     alignItems: 'flex-start',
@@ -118,6 +126,7 @@ export function SongVersionPicker({ versions = [], selectedVersionId = '', onSel
                                 }}
                             >
                                 <input
+                                    id={radioId}
                                     type="radio"
                                     name="song-version-choice"
                                     value={vId}

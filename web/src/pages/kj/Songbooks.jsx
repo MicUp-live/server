@@ -10,9 +10,9 @@ import { SongbookQRModal } from './components/SongbookQRModal.jsx'
 import { SongManagerView } from './components/SongManagerView.jsx'
 import { ManageAccessModal } from './components/ManageAccessModal.jsx'
 import { DeleteSongbookModal } from './components/DeleteSongbookModal.jsx'
-import { ActionPopover } from '../../components/ui/ActionPopover.jsx'
-import { useStartShowHandoff, resolveSongbookShowState } from './hooks/useStartShowHandoff.js'
-import { getSongbookPermissions, filterHostableSongbooks } from '../../utils/songbookPermissions.js'
+import { SongbookCard } from './components/SongbookCard.jsx'
+import { useStartShowHandoff } from './hooks/useStartShowHandoff.js'
+import { filterHostableSongbooks } from '../../utils/songbookPermissions.js'
 import './kj.css'
 
 export function Songbooks() {
@@ -263,271 +263,31 @@ export function Songbooks() {
                 </p>
             )}
 
-            {songbooks.map(songbook => {
-                const perms = getSongbookPermissions(songbook)
-                const showState = resolveSongbookShowState(songbook.id, events, { eventsLoading, eventsError })
-                const { hasLiveShow, liveEvent } = showState
-
-                return (
-                    <div class="card kj-songbook-card" key={songbook.id}>
-                        {editing?.id === songbook.id ? (
-                            <form onSubmit={event => {
-                                event.preventDefault()
-                                update(songbook, { name: editing.name, slug: editing.slug })
-                            }} style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-2) 0' }}>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                    <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', fontWeight: 'bold' }}>Songbook Name</label>
-                                    <input value={editing.name} onInput={event => setEditing({ ...editing, name: event.target.value })} required autoFocus />
-                                </div>
-                                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                                    <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', fontWeight: 'bold' }}>Short Code / Custom Slug (e.g. DAVEMIC)</label>
-                                    <input
-                                        value={editing.slug || ''}
-                                        onInput={event => setEditing({ ...editing, slug: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })}
-                                        placeholder="optional short code, e.g. davemic"
-                                    />
-                                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)' }}>
-                                        Patrons can join via this code directly on the home page or at /book/{editing.slug || '[code]'}
-                                    </span>
-                                </div>
-                                <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                                    <button class="btn btn-primary btn-sm" disabled={saving}>Save Changes</button>
-                                    <button type="button" class="btn btn-secondary btn-sm" onClick={() => setEditing(null)}>Cancel</button>
-                                </div>
-                            </form>
-                        ) : (
-                            <>
-                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 'var(--space-2)' }}>
-                                    <div>
-                                        <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--space-2)', flexWrap: 'wrap' }}>
-                                            <strong style={{ fontSize: 'var(--text-lg)' }}>{songbook.name}</strong>
-                                            {songbook.slug && (
-                                                <span style={{
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    gap: '4px',
-                                                    background: 'rgba(255, 42, 95, 0.12)',
-                                                    border: '1px solid rgba(255, 42, 95, 0.35)',
-                                                    borderRadius: 'var(--radius-sm)',
-                                                    padding: '1px 8px',
-                                                    fontSize: 'var(--text-xs)',
-                                                    fontWeight: 'bold',
-                                                    color: 'var(--color-accent)',
-                                                    fontFamily: 'var(--font-mono)',
-                                                }}>
-                                                    <span>CODE:</span> {songbook.slug.toUpperCase()}
-                                                </span>
-                                            )}
-                                            {songbook.is_public ? (
-                                                <span style={{ color: '#4ade80', fontSize: 'var(--text-xs)', fontWeight: 'bold' }}>● Public</span>
-                                            ) : (
-                                                <span style={{ color: 'var(--color-text-dim)', fontSize: 'var(--text-xs)' }}>○ Private</span>
-                                            )}
-                                            {!perms.isOwner && (
-                                                <span style={{
-                                                    display: 'inline-flex',
-                                                    alignItems: 'center',
-                                                    gap: '4px',
-                                                    background: 'rgba(99, 102, 241, 0.14)',
-                                                    border: '1px solid rgba(99, 102, 241, 0.35)',
-                                                    borderRadius: 'var(--radius-sm)',
-                                                    padding: '1px 8px',
-                                                    fontSize: 'var(--text-xs)',
-                                                    fontWeight: 600,
-                                                    color: '#a5b4fc',
-                                                }}>
-                                                    Shared{songbook.owner_display_name ? ` by ${songbook.owner_display_name}` : ''}
-                                                    {' · '}
-                                                    {[perms.canEditCatalog && 'Edit', perms.canHostShows && 'Host'].filter(Boolean).join(' + ')}
-                                                </span>
-                                            )}
-                                        </div>
-                                        <div style={{ color: 'var(--color-text-muted)', fontSize: 'var(--text-sm)', marginTop: '2px' }}>
-                                            {songbook.song_count} {songbook.song_count === 1 ? 'song' : 'songs'}
-                                        </div>
-
-                                        {/* Active Event Indicator Badge */}
-                                        {hasLiveShow && liveEvent && (
-                                            <div style={{
-                                                display: 'inline-flex',
-                                                alignItems: 'center',
-                                                gap: '6px',
-                                                background: 'rgba(34, 197, 94, 0.12)',
-                                                border: '1px solid rgba(34, 197, 94, 0.35)',
-                                                borderRadius: 'var(--radius-md)',
-                                                padding: '2px 8px',
-                                                fontSize: 'var(--text-xs)',
-                                                fontWeight: 'bold',
-                                                color: '#4ade80',
-                                                marginTop: '6px',
-                                            }}>
-                                                <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#22c55e', boxShadow: '0 0 6px #22c55e' }}></span>
-                                                <span>Live in: {liveEvent.venue_name ? `${liveEvent.venue_name} (${liveEvent.join_code})` : `${liveEvent.name} (${liveEvent.join_code})`}</span>
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-
-                                <div class="kj-songbook-actions">
-                                    {(perms.canHostShows || showState.status === 'live') && (showState.status === 'error' ? (
-                                        <button
-                                            type="button"
-                                            class="btn btn-secondary btn-sm"
-                                            onClick={loadEvents}
-                                            disabled={eventsLoading}
-                                            title="Failed to check show status. Click to retry."
-                                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                        >
-                                            <span>⚠️</span>
-                                            <span>Retry Show Check</span>
-                                        </button>
-                                    ) : showState.status === 'loading' ? (
-                                        <button
-                                            type="button"
-                                            class="btn btn-secondary btn-sm"
-                                            disabled
-                                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                        >
-                                            <span>⏳</span>
-                                            <span>Checking Shows...</span>
-                                        </button>
-                                    ) : showState.status === 'live' ? (
-                                        <a
-                                            class="btn btn-primary btn-sm"
-                                            href={showState.queueUrl}
-                                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                        >
-                                            <span>🎤</span>
-                                            <span>Live Show Queue</span>
-                                        </a>
-                                    ) : (
-                                        <button
-                                            type="button"
-                                            class="btn btn-primary btn-sm"
-                                            onClick={() => startShow(songbook.id)}
-                                            style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}
-                                        >
-                                            <span>🎤</span>
-                                            <span>Start Show</span>
-                                        </button>
-                                    ))}
-
-                                    {perms.canEditCatalog && (
-                                        <>
-                                            <button type="button" class="btn btn-secondary btn-sm" onClick={() => setManaging(songbook)}>
-                                                🎵 Manage Songs
-                                            </button>
-                                            <button type="button" class="btn btn-secondary btn-sm kj-desktop-only" onClick={() => setAssistant(songbook)}>
-                                                ⚡ Assistant Sync
-                                            </button>
-                                        </>
-                                    )}
-
-                                    {perms.canManageAccess && (
-                                        <button type="button" class="btn btn-secondary btn-sm" onClick={() => setAccessSongbook(songbook)}>
-                                            👥 Manage Access
-                                        </button>
-                                    )}
-
-                                    {(perms.canEditCatalog || perms.canManageBook || songbook.is_public) && (
-                                    <ActionPopover
-                                        label={`More actions for ${songbook.name}`}
-                                        panelTitle={songbook.name}
-                                        triggerText="⋯ More"
-                                    >
-                                        {(close) => (
-                                            <>
-                                                {perms.canEditCatalog && (
-                                                    <>
-                                                        <button
-                                                            type="button"
-                                                            class="kj-action-item kj-mobile-only"
-                                                            onClick={() => { close(); setAssistant(songbook) }}
-                                                        >
-                                                            <span>⚡</span>
-                                                            <span>Assistant Sync</span>
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            class="kj-action-item"
-                                                            onClick={() => { close(); exportCSV(songbook) }}
-                                                            disabled={exportingId === songbook.id}
-                                                        >
-                                                            <span>{exportingId === songbook.id ? '⏳' : '📥'}</span>
-                                                            <span>{exportingId === songbook.id ? 'Exporting CSV...' : 'Export CSV'}</span>
-                                                        </button>
-                                                    </>
-                                                )}
-                                                {songbook.is_public && songbook.public_id && (
-                                                    <>
-                                                        <button
-                                                            type="button"
-                                                            class="kj-action-item"
-                                                            onClick={() => { copyLink(songbook); close() }}
-                                                        >
-                                                            <span>🔗</span>
-                                                            <span>Copy Share Link</span>
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            class="kj-action-item"
-                                                            onClick={() => { close(); setQrSongbook(songbook) }}
-                                                        >
-                                                            <span>📱</span>
-                                                            <span>Download QR Code</span>
-                                                        </button>
-                                                        <a
-                                                            class="kj-action-item"
-                                                            href={`/book/${songbook.slug || songbook.public_id}`}
-                                                            target="_blank"
-                                                            rel="noopener noreferrer"
-                                                            onClick={close}
-                                                        >
-                                                            <span>👁️</span>
-                                                            <span>Preview Public Book</span>
-                                                        </a>
-                                                    </>
-                                                )}
-                                                {perms.canManageBook && (
-                                                    <>
-                                                        <button
-                                                            type="button"
-                                                            class="kj-action-item"
-                                                            onClick={() => { close(); update(songbook, { is_public: !songbook.is_public }) }}
-                                                        >
-                                                            <span>{songbook.is_public ? '🔒' : '🌐'}</span>
-                                                            <span>{songbook.is_public ? 'Make Private' : 'Publish Songbook'}</span>
-                                                        </button>
-                                                        <button
-                                                            type="button"
-                                                            class="kj-action-item"
-                                                            onClick={() => { close(); setEditing({ id: songbook.id, name: songbook.name, slug: songbook.slug || '' }) }}
-                                                        >
-                                                            <span>✏️</span>
-                                                            <span>Edit Details</span>
-                                                        </button>
-                                                        <hr class="kj-action-divider" />
-                                                        <button
-                                                            type="button"
-                                                            class="kj-action-item kj-action-item-danger"
-                                                            onClick={() => { close(); remove(songbook) }}
-                                                            title={events.some(e => e.songbook_id === songbook.id) ? 'Cannot delete while linked to events' : 'Delete songbook'}
-                                                        >
-                                                            <span>🗑️</span>
-                                                            <span>Delete Songbook</span>
-                                                        </button>
-                                                    </>
-                                                )}
-                                            </>
-                                        )}
-                                    </ActionPopover>
-                                    )}
-                                </div>
-                            </>
-                        )}
-                    </div>
-                )
-            })}
+            {songbooks.map(songbook => (
+                <SongbookCard
+                    key={songbook.id}
+                    songbook={songbook}
+                    events={events}
+                    eventsLoading={eventsLoading}
+                    eventsError={eventsError}
+                    editing={editing}
+                    saving={saving}
+                    exportingId={exportingId}
+                    onEditChange={setEditing}
+                    onUpdate={update}
+                    onCancelEdit={() => setEditing(null)}
+                    onStartEdit={setEditing}
+                    onRetryEvents={loadEvents}
+                    onStartShow={startShow}
+                    onManageSongs={setManaging}
+                    onAssistant={setAssistant}
+                    onManageAccess={setAccessSongbook}
+                    onExportCSV={exportCSV}
+                    onCopyLink={copyLink}
+                    onQr={setQrSongbook}
+                    onDelete={remove}
+                />
+            ))}
 
             <CreateShowModal
                 isOpen={!!createModalSongbookId}

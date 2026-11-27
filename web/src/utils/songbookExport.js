@@ -44,87 +44,120 @@ async function loadSearchAsset(url) {
     }
 }
 
+function normalizeStaticSong(s) {
+    return {
+        song_id: s.song_id || s.id,
+        artist: s.artist || '',
+        title: s.title || '',
+        label: s.label || '',
+        genre: s.genre || '',
+        disc: s.disc || '',
+        source: s.source || '',
+        video_url: s.video_url || '',
+        is_available: true,
+    }
+}
+
+function normalizeOverrideSong(changedSong) {
+    return {
+        ...changedSong,
+        song_id: changedSong.song_id || changedSong.ID,
+        artist: changedSong.artist || changedSong.Artist || '',
+        title: changedSong.title || changedSong.Title || '',
+        disc: changedSong.disc || changedSong.Disc || '',
+        source: changedSong.source || changedSong.Source || '',
+        genre: changedSong.genre || changedSong.Genre || '',
+        video_url: changedSong.video_url || changedSong.VideoURL || '',
+    }
+}
+
+function upsertOverrideSong(songs, changedSong) {
+    const normalized = normalizeOverrideSong(changedSong)
+    const index = songs.findIndex(s => s.song_id === normalized.song_id)
+    if (index >= 0) {
+        songs[index] = { ...songs[index], ...normalized }
+    } else {
+        songs.push(normalized)
+    }
+}
+
+function applyCatalogOverrides(songs, overrides) {
+    if (!overrides?.length) return songs
+    let result = songs
+    for (const change of overrides) {
+        if (change.deleted || change.Deleted) {
+            const changeID = change.song_id || change.SongID
+            result = result.filter(s => s.song_id !== changeID)
+            continue
+        }
+        const changedSong = change.song || change.Song
+        if (changedSong) {
+            upsertOverrideSong(result, changedSong)
+        }
+    }
+    return result
+}
+
+function extractSearchSongs(searchData) {
+    if (Array.isArray(searchData)) return searchData
+    return searchData.songs || searchData.tracks || []
+}
+
+async function loadStaticCatalog(songbook, customApi) {
+    try {
+        const managed = await customApi.get(`/songbooks/${songbook.id}/managed-manifest`).catch(() => null)
+        if (!managed?.static_ready || !managed.manifest_url) return null
+
+        const manifest = await fetch(managed.manifest_url)
+            .then(r => (r.ok ? r.json() : null))
+            .catch(() => null)
+        const searchPath = manifest?.search_path
+        if (!searchPath) return null
+
+        const searchUrl = managed.manifest_url.replace(/manifest\.json$/, searchPath)
+        const searchData = await loadSearchAsset(searchUrl)
+        if (!searchData) return null
+
+        const songs = extractSearchSongs(searchData).map(normalizeStaticSong)
+        const overrides = await customApi.get(`/songbooks/${songbook.id}/catalog-overrides`).catch(() => [])
+        return applyCatalogOverrides(songs, overrides)
+    } catch (err) {
+        console.warn('Could not load static catalog for songbook:', err)
+        return null
+    }
+}
+
+async function fetchPaginatedSongs(songbookId, customApi) {
+    const all = []
+    const pageSize = 5000
+    for (let offset = 0; ; offset += pageSize) {
+        const page = await customApi.get(`/songbooks/${songbookId}/songs?offset=${offset}`)
+        if (page?.length) all.push(...page)
+        if (!page || page.length < pageSize) break
+    }
+    return all
+}
+
+function compareSongsByArtistAndTitle(a, b) {
+    const aArtist = (a.artist || '').toLowerCase()
+    const bArtist = (b.artist || '').toLowerCase()
+    if (aArtist !== bArtist) return aArtist.localeCompare(bArtist)
+    const aTitle = (a.title || a.label || '').toLowerCase()
+    const bTitle = (b.title || b.label || '').toLowerCase()
+    return aTitle.localeCompare(bTitle)
+}
+
 /**
  * Fetches the complete list of songs for a songbook.
  * Handles S3 static catalogs (manifest + search.json.gz) with catalog overrides,
  * and falls back to paginated API queries across all pages.
  */
 export async function fetchAllSongsForSongbook(songbook, customApi = api) {
-    let all = null
-
-    try {
-        const managed = await customApi.get(`/songbooks/${songbook.id}/managed-manifest`).catch(() => null)
-        if (managed?.static_ready && managed.manifest_url) {
-            const manifest = await fetch(managed.manifest_url).then(r => r.ok ? r.json() : null).catch(() => null)
-            const searchPath = manifest?.search_path
-            if (searchPath) {
-                const searchUrl = managed.manifest_url.replace(/manifest\.json$/, searchPath)
-                const searchData = await loadSearchAsset(searchUrl)
-                if (searchData) {
-                    const rawSongs = Array.isArray(searchData) ? searchData : (searchData.songs || searchData.tracks || [])
-                    all = rawSongs.map(s => ({
-                        song_id: s.song_id || s.id,
-                        artist: s.artist || '',
-                        title: s.title || '',
-                        label: s.label || '',
-                        genre: s.genre || '',
-                        disc: s.disc || '',
-                        source: s.source || '',
-                        video_url: s.video_url || '',
-                        is_available: true,
-                    }))
-
-                    const overrides = await customApi.get(`/songbooks/${songbook.id}/catalog-overrides`).catch(() => [])
-                    for (const change of (overrides || [])) {
-                        const changeID = change.song_id || change.SongID
-                        const changedSong = change.song || change.Song
-                        if (change.deleted || change.Deleted) {
-                            all = all.filter(s => s.song_id !== changeID)
-                        } else if (changedSong) {
-                            const normalized = {
-                                ...changedSong,
-                                song_id: changedSong.song_id || changedSong.ID,
-                                artist: changedSong.artist || changedSong.Artist || '',
-                                title: changedSong.title || changedSong.Title || '',
-                                disc: changedSong.disc || changedSong.Disc || '',
-                                source: changedSong.source || changedSong.Source || '',
-                                genre: changedSong.genre || changedSong.Genre || '',
-                                video_url: changedSong.video_url || changedSong.VideoURL || '',
-                            }
-                            const index = all.findIndex(s => s.song_id === normalized.song_id)
-                            if (index >= 0) all[index] = { ...all[index], ...normalized }
-                            else all.push(normalized)
-                        }
-                    }
-                }
-            }
-        }
-    } catch (err) {
-        console.warn('Could not load static catalog for songbook:', err)
-        all = null
-    }
-
-    // Fall back to paginating API across all pages
+    let all = await loadStaticCatalog(songbook, customApi)
     if (all === null) {
-        all = []
-        const pageSize = 5000
-        for (let offset = 0; ; offset += pageSize) {
-            const page = await customApi.get(`/songbooks/${songbook.id}/songs?offset=${offset}`)
-            if (page?.length) all.push(...page)
-            if (!page || page.length < pageSize) break
-        }
+        all = await fetchPaginatedSongs(songbook.id, customApi)
     }
-
-    // Sort songs by Artist then Title
-    all.sort((a, b) => {
-        const aArtist = (a.artist || '').toLowerCase()
-        const bArtist = (b.artist || '').toLowerCase()
-        if (aArtist !== bArtist) return aArtist.localeCompare(bArtist)
-        const aTitle = (a.title || a.label || '').toLowerCase()
-        const bTitle = (b.title || b.label || '').toLowerCase()
-        return aTitle.localeCompare(bTitle)
-    })
-
+    all.sort(compareSongsByArtistAndTitle)
     return all
 }
 

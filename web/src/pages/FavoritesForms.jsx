@@ -3,6 +3,25 @@ import { clampPreferredKey } from '../utils/favoritesStore'
 import { PITCH_KEY_OPTIONS } from './favoritesHelpers'
 
 /**
+ * Attaches an Escape-key cancel listener to a form element via DOM subscription
+ * so non-interactive <form> elements do not carry JSX keyboard event handlers.
+ */
+function useEscapeCancel(formRef, onCancel) {
+    useEffect(() => {
+        const form = formRef.current
+        if (!form) return
+        const handleKeyDown = (e) => {
+            if (e.key === 'Escape') {
+                e.preventDefault()
+                onCancel?.()
+            }
+        }
+        form.addEventListener('keydown', handleKeyDown)
+        return () => form.removeEventListener('keydown', handleKeyDown)
+    }, [formRef, onCancel])
+}
+
+/**
  * Form for adding or editing a favorite song (title, artist, preferred pitch key).
  */
 export function FavoriteSongForm({
@@ -23,6 +42,7 @@ export function FavoriteSongForm({
     const [submitted, setSubmitted] = useState(false)
     const [formError, setFormError] = useState('')
 
+    const formRef = useRef(null)
     const titleRef = useRef(null)
     const artistRef = useRef(null)
 
@@ -30,15 +50,10 @@ export function FavoriteSongForm({
         titleRef.current?.focus()
     }, [])
 
+    useEscapeCancel(formRef, onCancel)
+
     const titleInvalid = (touched.title || submitted) && !title.trim()
     const artistInvalid = (touched.artist || submitted) && !artist.trim()
-
-    const handleKeyDown = (e) => {
-        if (e.key === 'Escape') {
-            e.preventDefault()
-            onCancel?.()
-        }
-    }
 
     const handleSubmit = (e) => {
         e.preventDefault()
@@ -84,10 +99,10 @@ export function FavoriteSongForm({
 
     return (
         <form
+            ref={formRef}
             class="favorites-form"
             aria-labelledby={heading ? headingId : undefined}
             onSubmit={handleSubmit}
-            onKeyDown={handleKeyDown}
             noValidate
         >
             {heading && (
@@ -101,7 +116,7 @@ export function FavoriteSongForm({
             )}
 
             <div class="favorites-field">
-                <label class="favorites-label" for={titleId}>
+                <label class="favorites-label" htmlFor={titleId}>
                     Song Title<span class="favorites-required-mark" aria-hidden="true">*</span>
                 </label>
                 <input
@@ -131,7 +146,7 @@ export function FavoriteSongForm({
             </div>
 
             <div class="favorites-field">
-                <label class="favorites-label" for={artistId}>
+                <label class="favorites-label" htmlFor={artistId}>
                     Artist<span class="favorites-required-mark" aria-hidden="true">*</span>
                 </label>
                 <input
@@ -161,7 +176,7 @@ export function FavoriteSongForm({
             </div>
 
             <div class="favorites-field">
-                <label class="favorites-label" for={keyId}>
+                <label class="favorites-label" htmlFor={keyId}>
                     Preferred Pitch Key
                 </label>
                 <select
@@ -205,20 +220,16 @@ export function FavoriteArtistForm({
     const [touched, setTouched] = useState(false)
     const [submitted, setSubmitted] = useState(false)
     const [formError, setFormError] = useState('')
+    const formRef = useRef(null)
     const nameRef = useRef(null)
 
     useEffect(() => {
         nameRef.current?.focus()
     }, [])
 
-    const nameInvalid = (touched || submitted) && !name.trim()
+    useEscapeCancel(formRef, onCancel)
 
-    const handleKeyDown = (e) => {
-        if (e.key === 'Escape') {
-            e.preventDefault()
-            onCancel?.()
-        }
-    }
+    const nameInvalid = (touched || submitted) && !name.trim()
 
     const handleSubmit = (e) => {
         e.preventDefault()
@@ -252,10 +263,10 @@ export function FavoriteArtistForm({
 
     return (
         <form
+            ref={formRef}
             class="favorites-form"
             aria-labelledby={heading ? headingId : undefined}
             onSubmit={handleSubmit}
-            onKeyDown={handleKeyDown}
             noValidate
         >
             {heading && (
@@ -269,7 +280,7 @@ export function FavoriteArtistForm({
             )}
 
             <div class="favorites-field">
-                <label class="favorites-label" for={nameId}>
+                <label class="favorites-label" htmlFor={nameId}>
                     Artist Name<span class="favorites-required-mark" aria-hidden="true">*</span>
                 </label>
                 <input

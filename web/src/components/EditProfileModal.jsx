@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks'
+import { useState, useEffect, useRef } from 'preact/hooks'
 import { user, updateProfile, exportUserData } from '../auth/store'
 import { showToast } from './Toast'
 import { Spinner } from './Spinner'
@@ -18,6 +18,7 @@ export function EditProfileModal({ isOpen, onClose }) {
     const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false)
     const [error, setError] = useState('')
     const [passwordError, setPasswordError] = useState('')
+    const displayNameRef = useRef(null)
 
     useEffect(() => {
         if (isOpen) {
@@ -30,6 +31,7 @@ export function EditProfileModal({ isOpen, onClose }) {
             setConfirmPassword('')
             setExporting(false)
             setIsDeleteModalOpen(false)
+            displayNameRef.current?.focus()
         }
 
         const handleKeyDown = (e) => {
@@ -119,7 +121,15 @@ export function EditProfileModal({ isOpen, onClose }) {
     }
 
     return (
-        <div
+        <dialog
+            open
+            class="modal-overlay"
+            aria-modal="true"
+            aria-labelledby="edit-profile-modal-title"
+            onCancel={(e) => {
+                e.preventDefault()
+                onClose()
+            }}
             style={{
                 position: 'fixed',
                 inset: 0,
@@ -130,11 +140,13 @@ export function EditProfileModal({ isOpen, onClose }) {
                 justifyContent: 'center',
                 zIndex: 1000,
                 padding: 'var(--space-4)',
+                border: 'none',
+                margin: 0,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                width: '100%',
+                height: '100%',
             }}
-            onClick={onClose}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="edit-profile-modal-title"
         >
             <div
                 style={{
@@ -150,7 +162,6 @@ export function EditProfileModal({ isOpen, onClose }) {
                     overflow: 'hidden',
                     position: 'relative',
                 }}
-                onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
                 <div
@@ -237,7 +248,7 @@ export function EditProfileModal({ isOpen, onClose }) {
 
                         <div style={{ marginBottom: 'var(--space-4)' }}>
                             <label
-                                for="edit-display-name"
+                                htmlFor="edit-display-name"
                                 style={{
                                     display: 'block',
                                     marginBottom: 'var(--space-2)',
@@ -249,6 +260,7 @@ export function EditProfileModal({ isOpen, onClose }) {
                                 Screen Name / Stage Name <span style={{ color: 'var(--color-accent)' }}>*</span>
                             </label>
                             <input
+                                ref={displayNameRef}
                                 id="edit-display-name"
                                 type="text"
                                 maxLength={50}
@@ -264,7 +276,6 @@ export function EditProfileModal({ isOpen, onClose }) {
                                     color: 'var(--color-text)',
                                     fontSize: 'var(--text-sm)',
                                 }}
-                                autoFocus
                                 required
                             />
                             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', display: 'block', marginTop: '4px' }}>
@@ -274,7 +285,7 @@ export function EditProfileModal({ isOpen, onClose }) {
 
                         <div style={{ marginBottom: 'var(--space-6)' }}>
                             <label
-                                for="edit-email"
+                                htmlFor="edit-email"
                                 style={{
                                     display: 'block',
                                     marginBottom: 'var(--space-2)',
@@ -308,10 +319,11 @@ export function EditProfileModal({ isOpen, onClose }) {
                         </div>
 
                         {/* Account Role / Mode Selector */}
-                        <div style={{ marginBottom: 'var(--space-6)' }}>
-                            <label
+                        <fieldset style={{ border: 'none', padding: 0, margin: '0 0 var(--space-6) 0' }}>
+                            <legend
                                 style={{
                                     display: 'block',
+                                    padding: 0,
                                     marginBottom: 'var(--space-2)',
                                     fontSize: 'var(--text-sm)',
                                     fontWeight: 500,
@@ -319,7 +331,7 @@ export function EditProfileModal({ isOpen, onClose }) {
                                 }}
                             >
                                 Account Mode
-                            </label>
+                            </legend>
                             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 'var(--space-3)' }}>
                                 <button
                                     type="button"
@@ -371,7 +383,7 @@ export function EditProfileModal({ isOpen, onClose }) {
                             <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', display: 'block', marginTop: '6px' }}>
                                 You can switch back and forth anytime. Your library and events are always saved.
                             </span>
-                        </div>
+                        </fieldset>
 
                         {/* Password Section */}
                         <div style={{
@@ -399,7 +411,7 @@ export function EditProfileModal({ isOpen, onClose }) {
                                     onKeyDown={(e) => {
                                         if (e.key === 'Enter') {
                                             e.preventDefault()
-                                            handlePasswordSave(e)
+                                            void handlePasswordSave(e)
                                         }
                                     }}
                                     style={{
@@ -423,7 +435,7 @@ export function EditProfileModal({ isOpen, onClose }) {
                                     onKeyDown={(e) => {
                                         if (e.key === 'Enter') {
                                             e.preventDefault()
-                                            handlePasswordSave(e)
+                                            void handlePasswordSave(e)
                                         }
                                     }}
                                     style={{
@@ -556,6 +568,6 @@ export function EditProfileModal({ isOpen, onClose }) {
                 isOpen={isDeleteModalOpen}
                 onClose={() => setIsDeleteModalOpen(false)}
             />
-        </div>
+        </dialog>
     )
 }

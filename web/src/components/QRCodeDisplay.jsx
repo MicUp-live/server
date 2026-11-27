@@ -69,78 +69,100 @@ export function QRCodeDisplay({
     const centerLogoSize = Math.max(24, Math.round(size * 0.22))
     const displayUrl = url.replace(/^https?:\/\//, '')
 
-    return (
-        <div class={`qr-container ${className}`}>
+    const cardContent = (
+        <>
+            {/* QR Code Canvas/Image Wrapper */}
             <div
-                class={`qr-card ${allowEnlarge ? 'qr-card-interactive' : ''}`}
-                onClick={() => allowEnlarge && setEnlarged(true)}
-                title={allowEnlarge ? 'Click to enlarge QR code' : undefined}
+                class="qr-frame"
+                style={{ width: `${size}px`, height: `${size}px` }}
             >
-                {/* QR Code Canvas/Image Wrapper */}
-                <div
-                    class="qr-frame"
-                    style={{ width: `${size}px`, height: `${size}px` }}
-                >
-                    {qrDataUrl ? (
-                        <img
-                            src={qrDataUrl}
-                            alt={`QR code to join at ${url}`}
-                            class="qr-image"
-                            width={size}
-                            height={size}
-                        />
-                    ) : error ? (
-                        <div class="qr-fallback">Unable to load QR</div>
-                    ) : (
-                        <div class="qr-loading">Generating QR...</div>
-                    )}
-
-                    {/* Center Brand Icon Badge */}
-                    {showLogo && qrDataUrl && (
-                        <div
-                            class="qr-center-badge"
-                            style={{
-                                width: `${centerLogoSize}px`,
-                                height: `${centerLogoSize}px`,
-                            }}
-                        >
-                            <BrandIcon size={Math.round(centerLogoSize * 0.75)} glowing={false} />
-                        </div>
-                    )}
-                </div>
-
-                {/* Subtext info */}
-                {title && <div class="qr-title">{title}</div>}
-                {subtitle && <div class="qr-subtitle">{subtitle}</div>}
-
-                {/* Prominent Join Code Badge */}
-                {showCode && joinCode && (
-                    <div class="qr-code-pill">
-                        <span class="qr-code-label">CODE</span>
-                        <span class="qr-code-value">{joinCode}</span>
-                    </div>
+                {qrDataUrl ? (
+                    <img
+                        src={qrDataUrl}
+                        alt={`QR code to join at ${url}`}
+                        class="qr-image"
+                        width={size}
+                        height={size}
+                    />
+                ) : error ? (
+                    <div class="qr-fallback">Unable to load QR</div>
+                ) : (
+                    <div class="qr-loading">Generating QR...</div>
                 )}
 
-                <div class="qr-url-text">{displayUrl}</div>
-
-                {allowEnlarge && (
-                    <div class="qr-hint">⛶ Click to Enlarge</div>
+                {/* Center Brand Icon Badge */}
+                {showLogo && qrDataUrl && (
+                    <div
+                        class="qr-center-badge"
+                        style={{
+                            width: `${centerLogoSize}px`,
+                            height: `${centerLogoSize}px`,
+                        }}
+                    >
+                        <BrandIcon size={Math.round(centerLogoSize * 0.75)} glowing={false} />
+                    </div>
                 )}
             </div>
 
+            {/* Subtext info */}
+            {title && <div class="qr-title">{title}</div>}
+            {subtitle && <div class="qr-subtitle">{subtitle}</div>}
+
+            {/* Prominent Join Code Badge */}
+            {showCode && joinCode && (
+                <div class="qr-code-pill">
+                    <span class="qr-code-label">CODE</span>
+                    <span class="qr-code-value">{joinCode}</span>
+                </div>
+            )}
+
+            <div class="qr-url-text">{displayUrl}</div>
+
+            {allowEnlarge && (
+                <div class="qr-hint">⛶ Click to Enlarge</div>
+            )}
+        </>
+    )
+
+    return (
+        <div class={`qr-container ${className}`}>
+            {allowEnlarge ? (
+                <button
+                    type="button"
+                    class="qr-card qr-card-interactive"
+                    onClick={() => setEnlarged(true)}
+                    title="Click to enlarge QR code"
+                    style={{ font: 'inherit', color: 'inherit' }}
+                >
+                    {cardContent}
+                </button>
+            ) : (
+                <div class="qr-card">
+                    {cardContent}
+                </div>
+            )}
+
             {/* Fullscreen Enlarge Modal for Bar / TV View */}
             {isEnlarged && (
-                <div
+                <dialog
+                    open
                     class="qr-modal-backdrop"
-                    onClick={() => setEnlarged(false)}
+                    aria-modal="true"
+                    aria-labelledby="qr-modal-title"
+                    onCancel={(e) => {
+                        e.preventDefault()
+                        setEnlarged(false)
+                    }}
+                    style={{
+                        border: 'none',
+                        margin: 0,
+                        maxWidth: 'none',
+                        maxHeight: 'none',
+                        width: '100%',
+                        height: '100%',
+                    }}
                 >
-                    <div
-                        class="qr-modal-content"
-                        role="dialog"
-                        aria-modal="true"
-                        aria-labelledby="qr-modal-title"
-                        onClick={(e) => e.stopPropagation()}
-                    >
+                    <div class="qr-modal-content">
                         <button
                             type="button"
                             class="qr-modal-close"
@@ -188,7 +210,7 @@ export function QRCodeDisplay({
 
                         <div class="qr-modal-url">{url}</div>
                     </div>
-                </div>
+                </dialog>
             )}
         </div>
     )

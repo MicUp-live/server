@@ -2,14 +2,13 @@ import { useState, useRef, useEffect, useCallback } from 'preact/hooks'
 import { api } from '../../../api/client.js'
 import { showToast } from '../../../components/toastState.js'
 import { createReferenceWorker } from '../../../api/referenceClient.js'
-import {
-    detectDelimiter,
-    parseDelimitedText,
-    detectSoftwareProfile,
-    rowsToSongs,
-} from '../../../utils/csvParser.js'
-import { isVirtualDJDatabaseXML, parseVirtualDJDatabase } from '../../../utils/virtualDjParser.js'
+import { rowsToSongs } from '../../../utils/csvParser.js'
 import { parseFolderFilesLocal } from '../../../utils/folderParser.js'
+import {
+    parseSpreadsheetTextLocal,
+    getSpreadsheetLoadedMessage,
+    remapColumnsWithWorker,
+} from './assistantImportHelpers.js'
 
 export const RESULTS_PAGE_SIZE = 100
 
@@ -117,39 +116,39 @@ export function useAssistantImport({ songbookId, onComplete }) {
             setColumnMapping(swappedMapping)
             setInvertedDetected(false)
             if (refWorkerRef.current) {
-                const seq = ++parseSequence.current
-                const auditSeq = ++auditSequence.current
-                setAuditing(true)
-                try {
-                    const out = await refWorkerRef.current.remapAndAudit(swappedMapping)
-                    if (seq !== parseSequence.current || auditSeq !== auditSequence.current) return
-                    setResults(out.songs)
-                    setExcluded(new Set())
-                    applyAuditPayload(out)
-                    showToast('Swapped Artist and Title columns')
-                } catch (err) {
-                    if (seq === parseSequence.current) showToast(err.message || 'Failed to remap columns', 'error')
-                } finally {
-                    if (auditSeq === auditSequence.current) setAuditing(false)
-                }
-            } else if (rawRows.length > 0) {
+                await remapColumnsWithWorker({
+                    worker: refWorkerRef.current,
+                    mapping: swappedMapping,
+                    parseSequence,
+                    auditSequence,
+                    setAuditing,
+                    setResults,
+                    setExcluded,
+                    applyAuditPayload,
+                    showToast,
+                    successMessage: 'Swapped Artist and Title columns',
+                })
+                return
+            }
+            if (rawRows.length > 0) {
                 const songs = rowsToSongs(rawRows, swappedMapping, true)
                 setResults(songs)
                 setExcluded(new Set())
                 runAudit(songs)
                 showToast('Swapped Artist and Title columns')
             }
-        } else if (results && results.length > 0) {
-            const swapped = results.map(r => ({
-                ...r,
-                artist: r.title,
-                title: r.artist,
-            }))
-            setResults(swapped)
-            setInvertedDetected(false)
-            runAudit(swapped)
-            showToast('Swapped Artist and Title columns')
+            return
         }
+        if (!results || results.length === 0) return
+        const swapped = results.map(r => ({
+            ...r,
+            artist: r.title,
+            title: r.artist,
+        }))
+        setResults(swapped)
+        setInvertedDetected(false)
+        runAudit(swapped)
+        showToast('Swapped Artist and Title columns')
     }, [importMode, columnMapping, rawRows, results, runAudit, applyAuditPayload])
 
     const handleApplyAllSuggestions = useCallback(() => {
@@ -337,6 +336,31 @@ export function useAssistantImport({ songbookId, onComplete }) {
         await parseFiles(fileList, pattern)
     }, [pattern, parseFiles])
 
+    const applySpreadsheetResults = useCallback(({
+        rawRows: nextRawRows,
+        headers: nextHeaders,
+        softwareProfile: nextProfile,
+        columnMapping: nextMapping,
+        songs,
+        isVirtualDJ,
+        toastMessage,
+        auditPayload,
+    }) => {
+        if (isVirtualDJ && (!songs || songs.length === 0)) {
+            showToast('No karaoke tracks found in VirtualDJ database.xml', 'error')
+            return
+        }
+        setRawRows(nextRawRows)
+        setHeaders(nextHeaders)
+        setSoftwareProfile(nextProfile)
+        setColumnMapping(nextMapping)
+        setResults(songs)
+        setExcluded(new Set())
+        setVisibleResultCount(RESULTS_PAGE_SIZE)
+        if (auditPayload) applyAuditPayload(auditPayload)
+        showToast(toastMessage)
+    }, [applyAuditPayload])
+
     const handleSpreadsheetFile = useCallback(async (file) => {
         if (!file) return
         const seq = ++parseSequence.current
@@ -351,46 +375,31 @@ export function useAssistantImport({ songbookId, onComplete }) {
             if (refWorkerRef.current) {
                 const out = await refWorkerRef.current.parseFileAndAudit(text, file.name)
                 if (seq !== parseSequence.current) return
-                if (out.isVirtualDJ && (!out.songs || out.songs.length === 0)) {
-                    showToast('No karaoke tracks found in VirtualDJ database.xml', 'error')
-                    return
-                }
-                setRawRows([])
-                setHeaders(out.headers || [])
-                setSoftwareProfile(out.softwareProfile || null)
-                setColumnMapping(out.columnMapping || null)
-                setResults(out.songs || [])
-                setExcluded(new Set())
-                setVisibleResultCount(RESULTS_PAGE_SIZE)
-                applyAuditPayload(out)
-                showToast(out.isVirtualDJ
-                    ? `Loaded ${out.songs.length} karaoke songs from VirtualDJ database.xml`
-                    : `Loaded ${out.songs.length} songs from ${file.name}`)
+                const songs = out.songs || []
+                applySpreadsheetResults({
+                    rawRows: [],
+                    headers: out.headers || [],
+                    softwareProfile: out.softwareProfile || null,
+                    columnMapping: out.columnMapping || null,
+                    songs,
+                    isVirtualDJ: out.isVirtualDJ,
+                    toastMessage: getSpreadsheetLoadedMessage(file.name, songs.length, out.isVirtualDJ),
+                    auditPayload: out,
+                })
                 return
             }
             // Fallback for environments without Web Workers
-            const isVdj = isVirtualDJDatabaseXML(text, file.name)
-            const parsed = isVdj ? parseVirtualDJDatabase(text) : (() => {
-                if (file.name.toLowerCase().endsWith('.xml')) throw new Error('Unsupported XML file. Please select a VirtualDJ database.xml file.')
-                const delim = detectDelimiter(text)
-                const rows = parseDelimitedText(text, delim)
-                if (rows.length === 0) throw new Error('The selected file appears to be empty')
-                const profile = detectSoftwareProfile(rows[0], delim)
-                const mapping = profile.columnMapping(rows[0])
-                return { rows, headerRow: rows[0], mapping, songs: rowsToSongs(rows, mapping, true) }
-            })()
-            if (isVdj && parsed.songs.length === 0) {
-                showToast('No karaoke tracks found in VirtualDJ database.xml', 'error')
-                return
-            }
-            setRawRows(parsed.rows)
-            setHeaders(parsed.headerRow)
-            setSoftwareProfile(isVdj ? { id: 'virtualdj_xml', name: 'VirtualDJ (database.xml)' } : null)
-            setColumnMapping(parsed.mapping)
-            setResults(parsed.songs)
-            setExcluded(new Set())
-            setVisibleResultCount(RESULTS_PAGE_SIZE)
-            showToast(`Loaded ${parsed.songs.length} songs from ${file.name}`)
+            const parsed = parseSpreadsheetTextLocal(text, file.name)
+            applySpreadsheetResults({
+                rawRows: parsed.rows,
+                headers: parsed.headerRow,
+                softwareProfile: parsed.softwareProfile,
+                columnMapping: parsed.mapping,
+                songs: parsed.songs,
+                isVirtualDJ: parsed.isVirtualDJ,
+                toastMessage: `Loaded ${parsed.songs.length} songs from ${file.name}`,
+                auditPayload: null,
+            })
         } catch (err) {
             if (seq !== parseSequence.current) return
             showToast(err.message || 'Failed to parse file', 'error')
@@ -401,11 +410,11 @@ export function useAssistantImport({ songbookId, onComplete }) {
             if (seq === parseSequence.current) setParsing(false)
             if (auditSeq === auditSequence.current) setAuditing(false)
         }
-    }, [applyAuditPayload])
+    }, [applySpreadsheetResults])
 
     const updateMapping = useCallback(async (field, colIndex) => {
         if (!columnMapping) return
-        const next = { ...columnMapping, [field]: parseInt(colIndex, 10) }
+        const next = { ...columnMapping, [field]: Number.parseInt(colIndex, 10) }
         setColumnMapping(next)
         if (refWorkerRef.current) {
             const seq = ++parseSequence.current

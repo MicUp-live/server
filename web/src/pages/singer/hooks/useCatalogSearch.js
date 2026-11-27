@@ -1,19 +1,21 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'preact/hooks'
 import { api } from '../../../api/client.js'
-import {
-    firstAvailableLetter,
-    loadCatalogManifest,
-    loadCatalogShard,
-    createCatalogWorker,
-} from '../../../api/catalogAssets.js'
+import { loadCatalogShard } from '../../../api/catalogAssets.js'
 import { showToast } from '../../../components/toastState.js'
 import {
     normalizeString,
     songKey,
     isFavoriteSong,
-    isFavoriteArtist,
 } from '../../../utils/favoritesStore.js'
 import { groupSongVersions } from '../utils/groupSongVersions.js'
+import {
+    buildCatalogQueryString,
+    resolveOverlayCatalog,
+    loadStaticInitialShard,
+    initCatalogSearchWorker,
+    buildWorkerArtistGroups,
+    buildSongArtistGroups,
+} from './catalogSearchHelpers.js'
 
 export {
     getLetterBucket,
@@ -90,73 +92,61 @@ export function useCatalogSearch({ resolvedSongbookId, eventCode, eventId, favSo
         setCatalogError('')
 
         const loadManifestAndFirstShard = async () => {
+            const isCancelled = () => cancelled
             try {
-                const queryParams = new URLSearchParams()
-                if (eventCode) queryParams.set('code', eventCode)
-                if (eventId) queryParams.set('event', eventId)
-                const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
-
+                const qs = buildCatalogQueryString(eventCode, eventId)
                 const resolution = await api.get(`/songbooks/${resolvedSongbookId}/public-manifest${qs}`)
                 if (!resolution?.static_ready) {
-                    if (resolution?.overlay_ready) {
-                        const overlay = await loadOverlayOnlyCatalog(api, resolvedSongbookId, qs)
-                        if (cancelled) return
-                        setPublicOverrides(overlay.loadedOverrides)
-                        setCatalogName(resolution.name || 'Songbook')
-                        setAllSongs(overlay.songs)
-                        setTotalSongs(overlay.totalSongs)
-                        setActiveLetter(overlay.firstLetter || 'A')
-                        if (overlay.firstArtistLetter) setActiveArtistLetter(overlay.firstArtistLetter)
-                        return
-                    }
-                    throw new Error('This catalog is still being prepared. Please try again shortly.')
+                    await resolveOverlayCatalog({
+                        api,
+                        resolvedSongbookId,
+                        qs,
+                        resolution,
+                        isCancelled,
+                        setters: {
+                            setPublicOverrides,
+                            setCatalogName,
+                            setAllSongs,
+                            setTotalSongs,
+                            setActiveLetter,
+                            setActiveArtistLetter,
+                        },
+                    })
+                    return
                 }
-                const manifest = await loadCatalogManifest(resolution.manifest_url)
-                const baseDir = resolution.manifest_url.substring(0, resolution.manifest_url.lastIndexOf('/') + 1)
-                manifest._baseDir = baseDir
-                const letter = firstAvailableLetter(manifest)
-                const shards = (manifest.letters?.[letter]?.shards || []).map(s => baseDir + s)
-                const pages = await Promise.all(shards.map(loadCatalogShard))
-                if (cancelled) return
 
-                let songs = pages.flat()
-                let loadedOverrides = null
-                try {
-                    const rawOverrides = await api.get(`/songbooks/${resolvedSongbookId}/public-overrides${qs}`)
-                    if (cancelled) return
-                    loadedOverrides = normalizePublicOverrides(rawOverrides)
-                    setPublicOverrides(loadedOverrides)
-                    songs = applyPublicOverrides(songs, loadedOverrides)
-                } catch {
-                    if (cancelled) return
+                const result = await loadStaticInitialShard({
+                    api,
+                    resolvedSongbookId,
+                    qs,
+                    resolution,
+                    isCancelled,
+                })
+                if (cancelled || !result) return
+
+                if (result.overridesLoaded) {
+                    setPublicOverrides(result.loadedOverrides)
                 }
-                songs = songs.sort((a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }))
-                const resolvedLetter = letter || 'A'
-                initialShardRef.current = { manifest, letter: resolvedLetter, overrides: loadedOverrides }
-                setStaticManifest(manifest)
+                initialShardRef.current = {
+                    manifest: result.manifest,
+                    letter: result.letter,
+                    overrides: result.loadedOverrides,
+                }
+                setStaticManifest(result.manifest)
                 setCatalogName(resolution.name || 'Songbook')
-                setAllSongs(songs)
-                setTotalSongs(manifest.total || 0)
-                setActiveLetter(resolvedLetter)
+                setAllSongs(result.songs)
+                setTotalSongs(result.manifest.total || 0)
+                setActiveLetter(result.letter)
 
-                const worker = createCatalogWorker()
-                if (worker) {
-                    workerRef.current = worker
-                    setIndexing(true)
-                    worker.init(baseDir + (manifest.search_path || 'search.json.gz'))
-                        .then((res) => {
-                            if (cancelled) return
-                            setWorkerArtists(res.artists || [])
-                            setWorkerReady(true)
-                        })
-                        .catch((err) => {
-                            console.error('Failed to init catalog worker:', err)
-                            if (!cancelled) showToast('Full search is temporarily unavailable', 'error')
-                        })
-                        .finally(() => {
-                            if (!cancelled) setIndexing(false)
-                        })
-                }
+                initCatalogSearchWorker({
+                    baseDir: result.baseDir,
+                    manifest: result.manifest,
+                    workerRef,
+                    isCancelled,
+                    setWorkerArtists,
+                    setWorkerReady,
+                    setIndexing,
+                })
             } catch (err) {
                 if (cancelled) return
                 setCatalogError(err.message || 'Failed to load catalog')
@@ -357,68 +347,22 @@ export function useCatalogSearch({ resolvedSongbookId, eventCode, eventId, favSo
     // Group songs by artist for collapsible artist view
     const artistGroups = useMemo(() => {
         if (staticManifest && workerArtists.length > 0) {
-            let list = isSearching ? artistSearchResults : workerArtists
-            if (activeArtistFilter) {
-                const normFilter = normalizeString(activeArtistFilter)
-                list = list.filter(a => a.norm === normFilter)
-            } else if (!isSearching) {
-                list = list.filter(a => getLetterBucket(a.artist) === activeArtistLetter)
-            }
-            const groups = list.map(item => ({
-                artist: item.artist,
-                norm: item.norm,
-                count: item.count,
-                songs: expandedArtistSongs[item.norm] || [],
-                isFav: isFavoriteArtist(item.artist),
-                matchedBySong: item.matchedBySong,
-            }))
-            if (!isSearching) {
-                groups.sort((a, b) => {
-                    if (a.isFav && !b.isFav) return -1
-                    if (!a.isFav && b.isFav) return 1
-                    return a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
-                })
-            }
-            return groups
-        }
-
-        let songsToGroup = isSearching ? searchResults : allSongs
-        if (activeArtistFilter) {
-            const normFilter = normalizeString(activeArtistFilter)
-            songsToGroup = songsToGroup.filter(s => normalizeString(s.artist) === normFilter)
-        } else if (!isSearching) {
-            songsToGroup = songsToGroup.filter(s => getLetterBucket(s.artist) === activeArtistLetter)
-        }
-
-        const map = new Map()
-        for (const song of songsToGroup) {
-            const artist = (song.artist || 'Unknown Artist').trim()
-            const norm = normalizeString(artist)
-            if (!map.has(norm)) {
-                map.set(norm, {
-                    artist,
-                    norm,
-                    count: 0,
-                    songs: [],
-                    isFav: isFavoriteArtist(artist)
-                })
-            }
-            map.get(norm).count++
-            map.get(norm).songs.push(song)
-        }
-
-        const groups = Array.from(map.values()).map(g => {
-            const grouped = groupSongVersions(g.songs)
-            return { ...g, songs: grouped, count: grouped.length }
-        })
-        if (!isSearching) {
-            groups.sort((a, b) => {
-                if (a.isFav && !b.isFav) return -1
-                if (!a.isFav && b.isFav) return 1
-                return a.artist.localeCompare(b.artist, undefined, { sensitivity: 'base' })
+            return buildWorkerArtistGroups({
+                workerArtists,
+                artistSearchResults,
+                isSearching,
+                activeArtistFilter,
+                activeArtistLetter,
+                expandedArtistSongs,
             })
         }
-        return groups
+        return buildSongArtistGroups({
+            allSongs,
+            searchResults,
+            isSearching,
+            activeArtistFilter,
+            activeArtistLetter,
+        })
     }, [allSongs, searchResults, artistSearchResults, isSearching, activeArtistFilter, favArtists, staticManifest, workerArtists, expandedArtistSongs, activeArtistLetter])
 
     const uniqueArtistsCount = useMemo(() => {

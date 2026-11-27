@@ -2,10 +2,11 @@ import { useState, useEffect, useRef, useMemo, useCallback } from 'preact/hooks'
 import { api } from '../api/client.js'
 import { Spinner } from '../components/Spinner.jsx'
 import { showToast } from '../components/toastState.js'
-import { firstAvailableLetter, loadCatalogManifest, loadCatalogShard, createCatalogWorker } from '../api/catalogAssets.js'
+import { loadCatalogShard } from '../api/catalogAssets.js'
 import { useQueuePolling } from '../hooks/useQueuePolling.js'
 import { getShowStatusInfo } from '../utils/showStatus.js'
 import { useKioskSession } from './kiosk/hooks/useKioskSession.js'
+import { fetchKioskEvent, resolveKioskCatalog, initKioskSearchWorker } from './kiosk/utils/kioskCatalogLoader.js'
 import { KioskHeader } from './kiosk/components/KioskHeader.jsx'
 import { KioskCatalogView } from './kiosk/components/KioskCatalogView.jsx'
 import { KioskRequestModal } from './kiosk/components/KioskRequestModal.jsx'
@@ -17,7 +18,6 @@ import {
     sortSongsByTitle,
     countSongsByLetter,
     groupSongsByArtist,
-    loadOverlayOnlyCatalog,
 } from './singer/utils/overlayCatalog.js'
 
 export function Kiosk({ id, code }) {
@@ -122,58 +122,40 @@ export function Kiosk({ id, code }) {
 
         const load = async () => {
             try {
-                let ev = null
-                if (code) {
-                    ev = await api.get(`/join/${encodeURIComponent(code.toUpperCase())}`)
-                } else if (id) {
-                    ev = await api.get(`/events/${id}/public`)
-                }
+                const ev = await fetchKioskEvent(api, { id, code })
                 if (cancelled) return
                 setEvent(ev)
 
-                const catalogId = ev.public_songbook_id || ev.songbook_id
-                const queryParams = new URLSearchParams()
-                if (ev.join_code) queryParams.set('code', ev.join_code)
-                if (ev.id) queryParams.set('event', ev.id)
-                const qs = queryParams.toString() ? `?${queryParams.toString()}` : ''
-                const resolution = await api.get(`/songbooks/${catalogId}/public-manifest${qs}`)
-                if (!resolution?.static_ready) {
-                    if (resolution?.overlay_ready) {
-                        const overlay = await loadOverlayOnlyCatalog(api, catalogId, qs)
-                        if (cancelled) return
-                        setAllSongs(overlay.songs)
-                        setCatalogTotal(overlay.totalSongs)
-                        setActiveLetter(overlay.firstLetter || 'A')
-                        if (overlay.firstArtistLetter) setActiveArtistLetter(overlay.firstArtistLetter)
-                        return
-                    }
-                    throw new Error('This catalog is still being prepared. Please try again shortly.')
-                }
-                const manifest = await loadCatalogManifest(resolution.manifest_url)
-                const baseDir = resolution.manifest_url.substring(0, resolution.manifest_url.lastIndexOf('/') + 1)
-                manifest._baseDir = baseDir
-                const letter = firstAvailableLetter(manifest)
-                const shards = (manifest.letters?.[letter]?.shards || []).map(p => baseDir + p)
-                const pages = await Promise.all(shards.map(loadCatalogShard))
+                const result = await resolveKioskCatalog(api, ev)
                 if (cancelled) return
-                const resolvedLetter = letter || 'A'
-                initialShardRef.current = { manifest, letter: resolvedLetter }
-                setStaticManifest(manifest)
-                setAllSongs(sortSongsByTitle(pages.flat()))
-                setCatalogTotal(manifest.total || 0)
-                setActiveLetter(resolvedLetter)
+
+                if (result.mode === 'overlay') {
+                    const { overlay } = result
+                    setAllSongs(overlay.songs)
+                    setCatalogTotal(overlay.totalSongs)
+                    setActiveLetter(overlay.firstLetter || 'A')
+                    if (overlay.firstArtistLetter) setActiveArtistLetter(overlay.firstArtistLetter)
+                    return
+                }
+
+                const { initial } = result
+                initialShardRef.current = { manifest: initial.manifest, letter: initial.resolvedLetter }
+                setStaticManifest(initial.manifest)
+                setAllSongs(initial.songs)
+                setCatalogTotal(initial.total)
+                setActiveLetter(initial.resolvedLetter)
                 setIndexing(true)
-                const worker = createCatalogWorker()
-                if (!worker) throw new Error('This device does not support catalog search.')
-                workerRef.current = worker
-                worker.init(baseDir + (manifest.search_path || 'search.json.gz'))
-                    .then((res) => {
-                        if (cancelled) return
-                        setWorkerArtists(res.artists || [])
+                initKioskSearchWorker({
+                    workerRef,
+                    baseDir: initial.baseDir,
+                    searchPath: initial.manifest.search_path,
+                    isCancelled: () => cancelled,
+                    onReady: (artists) => {
+                        setWorkerArtists(artists)
                         setWorkerReady(true)
-                    })
-                    .catch(console.error)
-                    .finally(() => { if (!cancelled) setIndexing(false) })
+                    },
+                    onDone: () => setIndexing(false),
+                })
             } catch (err) {
                 if (!cancelled) setError(err.message || 'Failed to load kiosk catalog')
             } finally {
@@ -181,7 +163,7 @@ export function Kiosk({ id, code }) {
             }
         }
 
-        load()
+        void load()
         return () => { cancelled = true }
     }, [id, code])
 
@@ -365,7 +347,6 @@ export function Kiosk({ id, code }) {
                             color: 'var(--color-text)',
                             outline: 'none',
                         }}
-                        autoFocus
                     />
                     {query && (
                         <button

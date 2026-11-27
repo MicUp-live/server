@@ -29,11 +29,11 @@ async function run() {
     let fontCounter = 0
     for (const block of fontFaceBlocks) {
         const familyMatch = /font-family:\s*['"]?([^'";]+)['"]?/.exec(block)
-        const weightMatch = /font-weight:\s*([^;]+);/.exec(block)
-        const styleMatch = /font-style:\s*([^;]+);/.exec(block)
-        const displayMatch = /font-display:\s*([^;]+);/.exec(block)
+        const weightMatch = /font-weight:([^;]+);/.exec(block)
+        const styleMatch = /font-style:([^;]+);/.exec(block)
+        const displayMatch = /font-display:([^;]+);/.exec(block)
         const urlMatch = /url\((https:\/\/[^)]+\.woff2)\)/.exec(block)
-        const unicodeMatch = /unicode-range:\s*([^;]+);/.exec(block)
+        const unicodeMatch = /unicode-range:([^;]+);/.exec(block)
 
         if (!familyMatch || !weightMatch || !urlMatch) continue
 

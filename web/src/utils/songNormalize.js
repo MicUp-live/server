@@ -142,45 +142,51 @@ export function normalizeDiscCode(code) {
     return c.replace(/[-_]+/g, '-')
 }
 
+function computeBoundedRow(c1, s2, i, n, maxDist, prevRow, currRow) {
+    const start = Math.max(1, i - maxDist)
+    const end = Math.min(n, i + maxDist)
+    const limit = maxDist + 1
+    currRow[0] = i
+    if (start > 1) currRow[start - 1] = limit
+
+    let rowMin = Math.min(i, limit)
+    for (let j = start; j <= end; j++) {
+        const cost = c1 === s2[j - 1] ? 0 : 1
+        const above = j <= i - 1 + maxDist ? prevRow[j] + 1 : limit
+        const diag = prevRow[j - 1] + cost
+        const left = currRow[j - 1] + 1
+        const val = Math.min(left, above, diag)
+        currRow[j] = val
+        rowMin = Math.min(rowMin, val)
+    }
+    if (end < n) currRow[end + 1] = limit
+    return rowMin
+}
+
 export function boundedLevenshtein(s1, s2, maxDist = 2) {
     if (s1 === s2) return 0
-    if (!s1) return s2.length <= maxDist ? s2.length : maxDist + 1
-    if (!s2) return s1.length <= maxDist ? s1.length : maxDist + 1
+    const limit = maxDist + 1
+    if (!s1) return Math.min(s2.length, limit)
+    if (!s2) return Math.min(s1.length, limit)
 
     const m = s1.length
     const n = s2.length
-    if (Math.abs(m - n) > maxDist) return maxDist + 1
+    if (Math.abs(m - n) > maxDist) return limit
 
     let prevRow = new Array(n + 1)
     let currRow = new Array(n + 1)
     for (let j = 0; j <= n; j++) prevRow[j] = j
 
     for (let i = 1; i <= m; i++) {
-        const start = Math.max(1, i - maxDist)
-        const end = Math.min(n, i + maxDist)
-        currRow[0] = i
-        if (start > 1) currRow[start - 1] = maxDist + 1
-
-        let rowMin = i <= maxDist ? i : maxDist + 1
-        const c1 = s1[i - 1]
-        for (let j = start; j <= end; j++) {
-            const cost = c1 === s2[j - 1] ? 0 : 1
-            const above = j <= i - 1 + maxDist ? prevRow[j] + 1 : maxDist + 1
-            const diag = prevRow[j - 1] + cost
-            const left = currRow[j - 1] + 1
-            const val = Math.min(left, above, diag)
-            currRow[j] = val
-            if (val < rowMin) rowMin = val
-        }
-        if (end < n) currRow[end + 1] = maxDist + 1
-        if (rowMin > maxDist) return maxDist + 1
+        const rowMin = computeBoundedRow(s1[i - 1], s2, i, n, maxDist, prevRow, currRow)
+        if (rowMin > maxDist) return limit
 
         const temp = prevRow
         prevRow = currRow
         currRow = temp
     }
 
-    return prevRow[n] <= maxDist ? prevRow[n] : maxDist + 1
+    return Math.min(prevRow[n], limit)
 }
 
 export function levenshteinDistance(s1, s2) {

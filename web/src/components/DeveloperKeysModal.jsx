@@ -27,7 +27,7 @@ export function DeveloperKeysModal({ isOpen, onClose }) {
 
     useEffect(() => {
         if (isOpen) {
-            loadKeys()
+            void loadKeys()
             const handleKeyDown = (e) => {
                 if (e.key === 'Escape') onClose()
             }
@@ -104,7 +104,15 @@ export function DeveloperKeysModal({ isOpen, onClose }) {
     const baseUrl = `${typeof window !== 'undefined' ? window.location.origin : 'https://micup.live'}/api/v1`
 
     return (
-        <div
+        <dialog
+            open
+            class="modal-overlay"
+            aria-modal="true"
+            aria-labelledby="developer-keys-modal-title"
+            onCancel={(e) => {
+                e.preventDefault()
+                onClose()
+            }}
             style={{
                 position: 'fixed',
                 inset: 0,
@@ -115,11 +123,13 @@ export function DeveloperKeysModal({ isOpen, onClose }) {
                 justifyContent: 'center',
                 zIndex: 1000,
                 padding: 'var(--space-4)',
+                border: 'none',
+                margin: 0,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                width: '100%',
+                height: '100%',
             }}
-            onClick={onClose}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="developer-keys-modal-title"
         >
             <div
                 style={{
@@ -135,7 +145,6 @@ export function DeveloperKeysModal({ isOpen, onClose }) {
                     overflow: 'hidden',
                     position: 'relative',
                 }}
-                onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
                 <div
@@ -228,7 +237,7 @@ export function DeveloperKeysModal({ isOpen, onClose }) {
                         <button
                             type="button"
                             onClick={() => {
-                                navigator.clipboard.writeText(baseUrl)
+                                void navigator.clipboard.writeText(baseUrl)
                                 showToast('Copied API Base URL! 📋')
                             }}
                             class="btn btn-secondary btn-sm"
@@ -322,7 +331,7 @@ export function DeveloperKeysModal({ isOpen, onClose }) {
                                 <button
                                     type="button"
                                     onClick={() => {
-                                        navigator.clipboard.writeText(createdKey.raw_key)
+                                        void navigator.clipboard.writeText(createdKey.raw_key)
                                         showToast('Copied Raw Secret Key! 📋')
                                     }}
                                     class="btn btn-primary btn-sm"
@@ -452,6 +461,6 @@ export function DeveloperKeysModal({ isOpen, onClose }) {
                     </button>
                 </div>
             </div>
-        </div>
+        </dialog>
     )
 }

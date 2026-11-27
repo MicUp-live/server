@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks'
+import { useState, useEffect, useRef } from 'preact/hooks'
 import { listPasskeys, registerPasskey, deletePasskey, isHost } from '../auth/store'
 import { isPasskeySupported } from '../utils/webauthn'
 import { showToast } from './Toast'
@@ -12,6 +12,13 @@ export function PasskeyModal({ isOpen, onClose }) {
     const [newDeviceName, setNewDeviceName] = useState('')
     const [showAddForm, setShowAddForm] = useState(false)
     const [error, setError] = useState('')
+    const deviceNameInputRef = useRef(null)
+
+    useEffect(() => {
+        if (showAddForm) {
+            deviceNameInputRef.current?.focus()
+        }
+    }, [showAddForm])
 
     const loadKeys = async () => {
         setLoading(true)
@@ -28,7 +35,7 @@ export function PasskeyModal({ isOpen, onClose }) {
 
     useEffect(() => {
         if (!isOpen) return
-        loadKeys()
+        void loadKeys()
 
         const handleKeyDown = (e) => {
             if (e.key === 'Escape') {
@@ -99,7 +106,15 @@ export function PasskeyModal({ isOpen, onClose }) {
     }
 
     return (
-        <div
+        <dialog
+            open
+            class="modal-overlay"
+            aria-modal="true"
+            aria-labelledby="passkey-modal-title"
+            onCancel={(e) => {
+                e.preventDefault()
+                onClose?.()
+            }}
             style={{
                 position: 'fixed',
                 inset: 0,
@@ -110,11 +125,13 @@ export function PasskeyModal({ isOpen, onClose }) {
                 justifyContent: 'center',
                 zIndex: 1000,
                 padding: 'var(--space-4)',
+                border: 'none',
+                margin: 0,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                width: '100%',
+                height: '100%',
             }}
-            onClick={onClose}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="passkey-modal-title"
         >
             <div
                 style={{
@@ -130,7 +147,6 @@ export function PasskeyModal({ isOpen, onClose }) {
                     overflow: 'hidden',
                     position: 'relative',
                 }}
-                onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
                 <div
@@ -285,6 +301,7 @@ export function PasskeyModal({ isOpen, onClose }) {
                                                 </div>
                                             </div>
                                             <button
+                                                type="button"
                                                 onClick={() => handleDeletePasskey(pk.id, pk.friendly_name)}
                                                 class="btn btn-danger btn-sm"
                                                 title="Revoke passkey"
@@ -308,7 +325,7 @@ export function PasskeyModal({ isOpen, onClose }) {
                                     }}
                                 >
                                     <label
-                                        for="passkey-device-name"
+                                        htmlFor="passkey-device-name"
                                         style={{
                                             display: 'block',
                                             fontSize: 'var(--text-xs)',
@@ -320,6 +337,7 @@ export function PasskeyModal({ isOpen, onClose }) {
                                         Passkey Name (e.g. "MacBook Touch ID", "iPhone 15")
                                     </label>
                                     <input
+                                        ref={deviceNameInputRef}
                                         type="text"
                                         id="passkey-device-name"
                                         placeholder="Device or key name"
@@ -327,7 +345,6 @@ export function PasskeyModal({ isOpen, onClose }) {
                                         onInput={(e) => setNewDeviceName(e.target.value)}
                                         maxLength={50}
                                         style={{ width: '100%', marginBottom: 'var(--space-3)' }}
-                                        autoFocus
                                     />
                                     <div style={{ display: 'flex', gap: 'var(--space-2)', justifyContent: 'flex-end' }}>
                                         <button
@@ -363,6 +380,6 @@ export function PasskeyModal({ isOpen, onClose }) {
                     )}
                 </div>
             </div>
-        </div>
+        </dialog>
     )
 }

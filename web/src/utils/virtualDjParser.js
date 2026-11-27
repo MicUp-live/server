@@ -86,6 +86,50 @@ function isExplicitKaraokeTrack(entry) {
     return false
 }
 
+function extractSongInner(cleaned, end, songCloseRe) {
+    const nextStart = end.tagEnd + 1
+    if (end.selfClosing) {
+        return { inner: '', nextOpenIndex: nextStart }
+    }
+    songCloseRe.lastIndex = nextStart
+    const closeMatch = songCloseRe.exec(cleaned)
+    // Bound inner search before any unclosed sibling <Song> to stay linear-time.
+    const nextOpenPeek = cleaned.indexOf('<Song', nextStart)
+    if (closeMatch && (nextOpenPeek === -1 || closeMatch.index < nextOpenPeek)) {
+        return {
+            inner: cleaned.slice(nextStart, closeMatch.index),
+            nextOpenIndex: closeMatch.index + closeMatch[0].length,
+        }
+    }
+    return { inner: '', nextOpenIndex: nextStart }
+}
+
+function buildSongEntry(songAttrs, tagAttrs) {
+    const filePath = (songAttrs.FilePath || '').trim()
+    const flag = parseInt(songAttrs.Flag || '0', 10) || 0
+    let artist = (tagAttrs.Author || tagAttrs.Artist || '').trim()
+    let title = (tagAttrs.Title || '').trim()
+    const genre = (tagAttrs.Genre || '').trim()
+    const source = (tagAttrs.Label || '').trim()
+
+    if (!artist && !title && filePath) {
+        const fb = fallbackFromFilePath(filePath)
+        artist = fb.artist
+        title = fb.title
+    }
+    if (!title && !artist) return null
+
+    return { filePath, flag, artist, title, source, genre }
+}
+
+function selectKaraokeEntries(entries) {
+    const explicitKaraoke = entries.filter(isExplicitKaraokeTrack)
+    if (explicitKaraoke.length > 0) return explicitKaraoke
+    const zipEntries = entries.filter(e => e.filePath.toLowerCase().endsWith('.zip'))
+    if (zipEntries.length > 0) return zipEntries
+    return entries
+}
+
 /**
  * Parses a VirtualDJ `database.xml` string into standardized rows & MicUp song models.
  * Filters to karaoke tracks when VirtualDJ Flag=32 / .cdg / karaoke genre markers are present
@@ -106,47 +150,15 @@ export function parseVirtualDJDatabase(xmlText = '') {
         const rawAttrs = cleaned.slice(attrStart, end.selfClosing ? end.tagEnd - 1 : end.tagEnd)
         const songAttrs = parseXmlAttributes(rawAttrs)
 
-        let inner = ''
-        if (!end.selfClosing) {
-            songCloseRe.lastIndex = end.tagEnd + 1
-            const closeMatch = songCloseRe.exec(cleaned)
-            // Bound inner search before any unclosed sibling <Song> to stay linear-time.
-            const nextOpenPeek = cleaned.indexOf('<Song', end.tagEnd + 1)
-            const hasValidClose = closeMatch && (nextOpenPeek === -1 || closeMatch.index < nextOpenPeek)
-            if (hasValidClose) {
-                inner = cleaned.slice(end.tagEnd + 1, closeMatch.index)
-                songOpenRe.lastIndex = closeMatch.index + closeMatch[0].length
-            } else {
-                songOpenRe.lastIndex = end.tagEnd + 1
-            }
-        } else {
-            songOpenRe.lastIndex = end.tagEnd + 1
-        }
+        const { inner, nextOpenIndex } = extractSongInner(cleaned, end, songCloseRe)
+        songOpenRe.lastIndex = nextOpenIndex
 
         const tagAttrs = inner ? extractFirstChildTagAttrs(inner, 'Tags') : {}
-
-        const filePath = (songAttrs.FilePath || '').trim()
-        const flag = parseInt(songAttrs.Flag || '0', 10) || 0
-        let artist = (tagAttrs.Author || tagAttrs.Artist || '').trim()
-        let title = (tagAttrs.Title || '').trim()
-        const genre = (tagAttrs.Genre || '').trim()
-        const source = (tagAttrs.Label || '').trim()
-
-        if (!artist && !title && filePath) {
-            const fb = fallbackFromFilePath(filePath)
-            artist = fb.artist
-            title = fb.title
-        }
-        if (!title && !artist) continue
-
-        entries.push({ filePath, flag, artist, title, source, genre })
+        const entry = buildSongEntry(songAttrs, tagAttrs)
+        if (entry) entries.push(entry)
     }
 
-    const explicitKaraoke = entries.filter(isExplicitKaraokeTrack)
-    const selected = explicitKaraoke.length > 0
-        ? explicitKaraoke
-        : entries.filter(e => e.filePath.toLowerCase().endsWith('.zip'))
-    const finalEntries = selected.length > 0 ? selected : entries
+    const finalEntries = selectKaraokeEntries(entries)
 
     const headerRow = ['Artist', 'Title', 'Source', 'Genre', 'Location']
     const rows = [

@@ -130,6 +130,31 @@ export function groupSongVersions(songs = []) {
     })
 }
 
+function getDistinctFieldValue(song, allVersions, field) {
+    if (!Array.isArray(allVersions) || allVersions.length <= 1) return ''
+    const value = song[field]?.trim()
+    if (!value) return ''
+    const distinct = new Set(allVersions.map(v => normalizeGroupPart(v?.[field])).filter(Boolean))
+    return distinct.size > 1 ? value : ''
+}
+
+function resolveVersionLabel(candidates, fallbackGenre, index) {
+    const primary = candidates.find(Boolean)
+    if (primary) return primary
+    if (fallbackGenre) return `${fallbackGenre} • Version ${index + 1}`
+    return `Version ${index + 1}`
+}
+
+function collectVersionDetails(entries, label) {
+    const details = []
+    for (const { value, allowSameAsLabel } of entries) {
+        if (!value) continue
+        if (!allowSameAsLabel && value === label) continue
+        details.push(value)
+    }
+    return details
+}
+
 /**
  * Returns structured distinguishing metadata for a backing-track version relative to its siblings.
  */
@@ -148,41 +173,21 @@ export function describeVersion(song, index = 0, allVersions = []) {
     const disc = getTrackDisc(song)
     const titleDiff = extractTitleDifference(song, allVersions)
     const videoLabel = getVideoSourceLabel(song.video_url)
-
-    let artistDiff = ''
-    let genreDiff = ''
-    if (Array.isArray(allVersions) && allVersions.length > 1) {
-        const distinctArtists = new Set(allVersions.map(v => normalizeGroupPart(v?.artist)).filter(Boolean))
-        if (distinctArtists.size > 1 && song.artist && song.artist.trim()) {
-            artistDiff = song.artist.trim()
-        }
-        const distinctGenres = new Set(allVersions.map(v => normalizeGroupPart(v?.genre)).filter(Boolean))
-        if (distinctGenres.size > 1 && song.genre && song.genre.trim()) {
-            genreDiff = song.genre.trim()
-        }
-    }
+    const artistDiff = getDistinctFieldValue(song, allVersions, 'artist')
+    const genreDiff = getDistinctFieldValue(song, allVersions, 'genre')
 
     const fallbackGenre = (song.genre || '').trim()
-    let label = `Version ${index + 1}`
-    if (provider) {
-        label = provider
-    } else if (titleDiff) {
-        label = titleDiff
-    } else if (disc) {
-        label = disc
-    } else if (videoLabel) {
-        label = videoLabel
-    } else if (genreDiff) {
-        label = genreDiff
-    } else if (fallbackGenre) {
-        label = `${fallbackGenre} • Version ${index + 1}`
-    }
-
-    const details = []
-    if (titleDiff && titleDiff !== label) details.push(titleDiff)
-    if (artistDiff) details.push(artistDiff)
-    if (genreDiff && genreDiff !== label) details.push(genreDiff)
-    if (videoLabel && videoLabel !== label) details.push(videoLabel)
+    const label = resolveVersionLabel(
+        [provider, titleDiff, disc, videoLabel, genreDiff],
+        fallbackGenre,
+        index,
+    )
+    const details = collectVersionDetails([
+        { value: titleDiff, allowSameAsLabel: false },
+        { value: artistDiff, allowSameAsLabel: true },
+        { value: genreDiff, allowSameAsLabel: false },
+        { value: videoLabel, allowSameAsLabel: false },
+    ], label)
 
     const hasMetadata = Boolean(provider || disc || titleDiff || artistDiff || genreDiff || videoLabel)
 

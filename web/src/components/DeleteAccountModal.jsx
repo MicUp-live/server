@@ -52,7 +52,15 @@ export function DeleteAccountModal({ isOpen, onClose }) {
     }
 
     return (
-        <div
+        <dialog
+            open
+            class="modal-overlay"
+            aria-modal="true"
+            aria-labelledby="delete-account-modal-title"
+            onCancel={(e) => {
+                e.preventDefault()
+                onClose()
+            }}
             style={{
                 position: 'fixed',
                 inset: 0,
@@ -63,11 +71,13 @@ export function DeleteAccountModal({ isOpen, onClose }) {
                 justifyContent: 'center',
                 zIndex: 1000,
                 padding: 'var(--space-4)',
+                border: 'none',
+                margin: 0,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                width: '100%',
+                height: '100%',
             }}
-            onClick={onClose}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="delete-account-modal-title"
         >
             <div
                 style={{
@@ -83,7 +93,6 @@ export function DeleteAccountModal({ isOpen, onClose }) {
                     overflow: 'hidden',
                     position: 'relative',
                 }}
-                onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
                 <div
@@ -250,6 +259,6 @@ export function DeleteAccountModal({ isOpen, onClose }) {
                     </div>
                 </form>
             </div>
-        </div>
+        </dialog>
     )
 }

@@ -56,6 +56,8 @@ export function Docs({ section }) {
                 setCopiedId(id)
                 showToast('Copied to clipboard! 📋')
                 setTimeout(() => setCopiedId(null), 2000)
+            }).catch(() => {
+                // Ignore clipboard write failures
             })
         }
     }

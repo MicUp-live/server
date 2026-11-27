@@ -19,7 +19,9 @@ type collectedPipelineSources struct {
 func resolvePipelineDefaults(opts PipelineOptions) (time.Time, string, func(string, ...any)) {
 	logf := opts.Logf
 	if logf == nil {
-		logf = func(string, ...any) {}
+		logf = func(string, ...any) {
+			// Default no-op logger when PipelineOptions.Logf is omitted.
+		}
 	}
 	now := opts.Now
 	if now.IsZero() {
@@ -249,8 +251,7 @@ func compileCatalogArtifacts(allTracks []CanonicalTrack, discMap map[string]Cano
 
 func buildSourceManifest(
 	now time.Time,
-	totalUniqueTracks int,
-	mappedDiscs int,
+	totalUniqueTracks, mappedDiscs int,
 	staleSources []string,
 	archivedList []ArchivedSource,
 ) SourceManifest {

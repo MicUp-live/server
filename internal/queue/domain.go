@@ -209,8 +209,7 @@ func countSingerActive(activeQueue []*models.SongRequest, normSinger string) int
 func placeFairPriority(
 	event *models.Event,
 	songReq *models.SongRequest,
-	activeQueue []*models.SongRequest,
-	completedReqs []*models.SongRequest,
+	activeQueue, completedReqs []*models.SongRequest,
 	activeAhead int,
 	nowMilli int64,
 ) PlacementResult {
@@ -243,8 +242,7 @@ func buildSongCycles(activeQueue []*models.SongRequest) map[string]int {
 func findFairPriorityInsertIdx(
 	event *models.Event,
 	songReq *models.SongRequest,
-	activeQueue []*models.SongRequest,
-	completedReqs []*models.SongRequest,
+	activeQueue, completedReqs []*models.SongRequest,
 	newCycle int,
 ) int {
 	normSinger := normalizeSingerName(songReq.SingerName)
@@ -440,9 +438,7 @@ type fairPriorityTailItem struct {
 
 func transitionFairPriority(
 	event *models.Event,
-	protected []*models.SongRequest,
-	tail []*models.SongRequest,
-	completedReqs []*models.SongRequest,
+	protected, tail, completedReqs []*models.SongRequest,
 ) []*models.SongRequest {
 	singerActive := make(map[string]int, len(protected))
 	for _, req := range protected {

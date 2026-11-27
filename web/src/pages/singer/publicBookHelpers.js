@@ -90,7 +90,7 @@ function alertUpNext(activeMatch, buzzedSet, playChime) {
     if (areStageAlertsEnabled()) {
         playChime()
         triggerVibration()
-        sendSingerNotification("🎤 YOU'RE CALLED TO THE STAGE!", {
+        void sendSingerNotification("🎤 YOU'RE CALLED TO THE STAGE!", {
             body: `Head to the stage now for "${activeMatch.song_title || 'your anthem'}"!`,
             tag: `micup-upnext-${activeMatch.id}`,
         })
@@ -104,7 +104,7 @@ function alertOnDeck(activeMatch, buzzedSet, playChime) {
     buzzedSet.add(key)
     if (areStageAlertsEnabled()) {
         playChime()
-        sendSingerNotification("⚠️ YOU'RE ON DECK!", {
+        void sendSingerNotification("⚠️ YOU'RE ON DECK!", {
             body: `You are next after this song for "${activeMatch.song_title}". Head toward the stage!`,
             tag: `micup-ondeck-${activeMatch.id}`,
         })
@@ -119,7 +119,7 @@ export function resolveActiveQueueStatus(queue, targetKey, buzzedSet, playChime)
     const activeMatch = queue.find(item => myReqs.some(m => m.id === item.id))
     if (!activeMatch) return null
 
-    requestScreenWakeLock()
+    void requestScreenWakeLock()
     if (activeMatch.status === 'up_next') {
         alertUpNext(activeMatch, buzzedSet, playChime)
         return '🎤 CALLED TO STAGE!'

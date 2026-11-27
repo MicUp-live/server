@@ -13,7 +13,10 @@ const VARIANT_WORDS = new Set([
     'unplugged', 'parody', 'cover', 'tribute', 'remake', 'extended',
     'acapella', 'club', 'mashup', 'megamix', 'part', 'pt',
 ])
-const GENERIC_DISC_PREFIX_RE = /^(?:MP3|MP4|M4A|CD\d+|DISC\d+|DISK\d+|TRACK\d+|TRK\d+|VOL\d+|SIDE\d+|PART\d+|PT\d+|NO\d+|TOP\d+)$/i
+const GENERIC_DISC_EXACT = new Set(['mp3', 'mp4', 'm4a'])
+const GENERIC_DISC_PREFIXES = new Set([
+    'cd', 'disc', 'disk', 'track', 'trk', 'vol', 'side', 'part', 'pt', 'no', 'top',
+])
 const MAX_SEED_DF = 1500
 const MAX_SEED_TOKENS = 8
 
@@ -26,7 +29,11 @@ function coreSignature(aTokens, tTokens) {
 }
 
 function isDiscLikeToken(tok) {
-    return /^[a-z]{1,6}\d{2,6}[a-z0-9]*$/i.test(tok) && !GENERIC_DISC_PREFIX_RE.test(tok)
+    if (!/^[a-z]{1,6}\d{2,6}[a-z0-9]*$/i.test(tok)) return false
+    const lower = tok.toLowerCase()
+    if (GENERIC_DISC_EXACT.has(lower)) return false
+    const match = /^([a-z]+)\d+$/.exec(lower)
+    return !match || !GENERIC_DISC_PREFIXES.has(match[1])
 }
 
 function hasContiguousSpan(qTokens, targetTokens) {
@@ -80,7 +87,7 @@ export function indexSecondaryMaps(index, origKey, track, normA, normT, deps) {
 export function recordTrackTokens(tokenCounts, aTokens, tTokens) {
     if (aTokens.length === 0 || tTokens.length === 0) return
     const seen = new Set(aTokens)
-    for (let i = 0; i < tTokens.length; i++) seen.add(tTokens[i])
+    for (const tok of tTokens) seen.add(tok)
     for (const tok of seen) {
         tokenCounts.set(tok, (tokenCounts.get(tok) || 0) + 1)
     }
@@ -104,7 +111,7 @@ function writeTrackPostings(index, writeCursor, tid) {
     const tTokens = index.titleCoreTokens[tid]
     if (aTokens.length === 0 || tTokens.length === 0) return
     const seen = new Set(aTokens)
-    for (let i = 0; i < tTokens.length; i++) seen.add(tTokens[i])
+    for (const tok of tTokens) seen.add(tok)
     for (const tok of seen) {
         const pos = writeCursor.get(tok)
         index.postingsBuf[pos] = tid
@@ -155,16 +162,15 @@ export function buildArtistDeleteIndex(artistNames, artistDeleteIndex) {
 
 export function countQueryTokens(qTokens) {
     const counts = new Map()
-    for (let i = 0; i < qTokens.length; i++) {
-        counts.set(qTokens[i], (counts.get(qTokens[i]) || 0) + 1)
+    for (const tok of qTokens) {
+        counts.set(tok, (counts.get(tok) || 0) + 1)
     }
     return counts
 }
 
 export function collectSeedTokens(qUnique, tokenLengths) {
     const seedable = []
-    for (let i = 0; i < qUnique.length; i++) {
-        const tok = qUnique[i]
+    for (const tok of qUnique) {
         const df = tokenLengths.get(tok)
         if (df !== undefined && df > 0 && df <= MAX_SEED_DF) {
             seedable.push({ tok, df })
@@ -200,8 +206,8 @@ export function collectCandidateTids(index, seedable) {
 }
 
 function hasAllTokens(tokens, tokenSet) {
-    for (let j = 0; j < tokens.length; j++) {
-        if (!tokenSet.has(tokens[j])) return false
+    for (const tok of tokens) {
+        if (!tokenSet.has(tok)) return false
     }
     return true
 }
@@ -209,8 +215,7 @@ function hasAllTokens(tokens, tokenSet) {
 function countResidualTokens(qUnique, matchedSet) {
     let rVar = 0
     let rExtra = 0
-    for (let j = 0; j < qUnique.length; j++) {
-        const tok = qUnique[j]
+    for (const tok of qUnique) {
         if (matchedSet.has(tok)) continue
         if (NOISE_WORDS.has(tok) || isDiscLikeToken(tok) || /^\d{1,2}$/.test(tok) || /^\d{5,8}$/.test(tok)) {
             continue
@@ -241,7 +246,7 @@ function scoreRawCandidate(index, tid, queryCtx) {
     if (!hasAllTokens(aTokens, qSet) || !hasAllTokens(tTokens, qSet)) return null
 
     const matchedSet = new Set(aTokens)
-    for (let j = 0; j < tTokens.length; j++) matchedSet.add(tTokens[j])
+    for (const tok of tTokens) matchedSet.add(tok)
 
     // Self-titled 1-word guard: if artist and title share a single token (e.g. "Hair - Hair"),
     // require that token to appear at least twice in qTokens.
@@ -308,7 +313,7 @@ function addDeleteCandidates(artistDeleteIndex, key, candAids) {
         candAids.add(val)
         return
     }
-    for (let i = 0; i < val.length; i++) candAids.add(val[i])
+    for (const aid of val) candAids.add(aid)
 }
 
 export function collectArtistCandidates(artistDeleteIndex, compact) {
@@ -322,8 +327,8 @@ export function collectArtistCandidates(artistDeleteIndex, compact) {
 
 function findRichestTrackWithTitle(tracks, tids, normT) {
     let richest = null
-    for (let j = 0; j < tids.length; j++) {
-        const t = tracks[tids[j]]
+    for (const tid of tids) {
+        const t = tracks[tid]
         if (normalizeTitle(t.title) !== normT) continue
         if (!richest || trackRichness(t) > trackRichness(richest)) {
             richest = t
@@ -367,8 +372,8 @@ export function findBestTitleTypoMatch(tracks, tids, normT) {
     let bestNormTitle = ''
     let tied = false
 
-    for (let i = 0; i < tids.length; i++) {
-        const t = tracks[tids[i]]
+    for (const tid of tids) {
+        const t = tracks[tid]
         const candNormTitle = normalizeTitle(t.title)
         const dist = boundedLevenshtein(normT, candNormTitle, 2)
         if (dist === 0 || dist > 2 || dist > bestDist) continue

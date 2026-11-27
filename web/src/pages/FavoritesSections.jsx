@@ -77,7 +77,11 @@ export function FavoritesToolbar({
                 </div>
             </search>
 
-            <div class="favorites-tabs" role="group" aria-label="Filter favorites by type">
+            <fieldset
+                class="favorites-tabs"
+                aria-label="Filter favorites by type"
+                style={{ border: 'none', padding: 0, margin: 0, minInlineSize: 0 }}
+            >
                 <button
                     type="button"
                     class="favorites-tab"
@@ -102,7 +106,7 @@ export function FavoritesToolbar({
                 >
                     Artists ({artistsCount})
                 </button>
-            </div>
+            </fieldset>
         </div>
     )
 }

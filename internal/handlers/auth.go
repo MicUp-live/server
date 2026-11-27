@@ -22,10 +22,11 @@ import (
 )
 
 const (
-	accessTokenLifetime           = 15 * time.Minute
-	refreshTokenLifetime          = 30 * 24 * time.Hour
-	deletionRecoveryTokenLifetime = 24 * time.Hour
-	deletionRecoveryAction        = "delete-account-recovery"
+	accessTokenLifetime             = 15 * time.Minute
+	refreshTokenLifetime            = 30 * 24 * time.Hour
+	deletionRecoveryTokenLifetime   = 24 * time.Hour
+	deletionRecoveryAction          = "delete-account-recovery"
+	errInvalidDeletionRecoveryToken = "invalid deletion recovery token"
 )
 
 type contextKey string
@@ -520,7 +521,7 @@ func (h *AuthHandler) validateDeletionTokenPair(delHeader, bearerToken string) (
 	}
 	delClaims, delErr := h.parseAccessToken(delHeader)
 	if delErr != nil {
-		return http.StatusUnauthorized, "invalid deletion recovery token"
+		return http.StatusUnauthorized, errInvalidDeletionRecoveryToken
 	}
 	if bearerClaims, bErr := h.parseAccessToken(bearerToken); bErr == nil && bearerClaims.UserID != delClaims.UserID {
 		return http.StatusForbidden, "cannot resume account deletion for another user"
@@ -530,7 +531,7 @@ func (h *AuthHandler) validateDeletionTokenPair(delHeader, bearerToken string) (
 
 func (h *AuthHandler) resolveDeletionRecoveryUser(ctx context.Context, claims *accessClaims) (*models.User, int, string) {
 	if claims.DeletionEpoch == "" {
-		return nil, http.StatusUnauthorized, "invalid deletion recovery token"
+		return nil, http.StatusUnauthorized, errInvalidDeletionRecoveryToken
 	}
 	user, err := h.Store.GetUser(ctx, claims.UserID)
 	if errors.Is(err, os.ErrNotExist) {
@@ -542,7 +543,7 @@ func (h *AuthHandler) resolveDeletionRecoveryUser(ctx context.Context, claims *a
 		}, 0, ""
 	}
 	if err != nil || user == nil || !user.Deleting || user.DeletionEpoch != claims.DeletionEpoch {
-		return nil, http.StatusUnauthorized, "invalid deletion recovery token"
+		return nil, http.StatusUnauthorized, errInvalidDeletionRecoveryToken
 	}
 	return user, 0, ""
 }

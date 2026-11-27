@@ -39,17 +39,19 @@ func isSunflyIgnoredLine(trimmed string) bool {
 		sunflyFooterRe.MatchString(trimmed)
 }
 
+const sunflySongTitleHeader = "Song Title"
+
 func isSunflyColumnHeader(line string) bool {
-	return strings.Contains(line, "Made Famous By") && strings.Contains(line, "Song Title")
+	return strings.Contains(line, "Made Famous By") && strings.Contains(line, sunflySongTitleHeader)
 }
 
 func computeSunflySplitCol(line string, current int) int {
-	firstTitleByte := strings.Index(line, "Song Title")
+	firstTitleByte := strings.Index(line, sunflySongTitleHeader)
 	secondArtistByte := strings.LastIndex(line, "Made Famous By")
 	if firstTitleByte <= 0 || secondArtistByte <= firstTitleByte {
 		return current
 	}
-	leftTitleEndRune := len([]rune(line[:firstTitleByte+len("Song Title")]))
+	leftTitleEndRune := len([]rune(line[:firstTitleByte+len(sunflySongTitleHeader)]))
 	rightArtistRune := len([]rune(line[:secondArtistByte]))
 	if rightArtistRune > leftTitleEndRune {
 		return (leftTitleEndRune + rightArtistRune) / 2

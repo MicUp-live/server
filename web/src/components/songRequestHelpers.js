@@ -32,7 +32,7 @@ export function computeCooldownRemaining(eventId, eventDelay) {
     const lastSubTime = Number.parseInt(lastSubTimeStr, 10)
     const elapsedSec = Math.floor((Date.now() - lastSubTime) / 1000)
     const remaining = eventDelay - elapsedSec
-    return remaining > 0 ? remaining : 0
+    return Math.max(0, remaining) || 0
 }
 
 export async function resolveActiveEventId({ eventId, joinCodeInput, onEventJoined, setResolvingCode }) {

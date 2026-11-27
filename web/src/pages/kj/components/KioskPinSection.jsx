@@ -2,7 +2,7 @@ import { showToast } from '../../../components/Toast.jsx'
 
 export function generateRandomKioskPin() {
     if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
-        throw new Error('Web Crypto API is required to generate a Kiosk PIN')
+        throw new TypeError('Web Crypto API is required to generate a Kiosk PIN')
     }
     const buf = new Uint32Array(1)
     crypto.getRandomValues(buf)

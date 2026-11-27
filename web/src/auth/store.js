@@ -328,9 +328,7 @@ async function hydrateSongbookCatalog(item) {
 
 async function hydrateExportSongbooks(songbooks) {
     if (!songbooks?.length || typeof fetch === 'undefined') return
-    for (const item of songbooks) {
-        await hydrateSongbookCatalog(item)
-    }
+    await Promise.all(songbooks.map((item) => hydrateSongbookCatalog(item)))
 }
 
 function triggerJsonDownload(data, filename) {

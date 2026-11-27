@@ -6,10 +6,13 @@ import { showToast } from '../../../components/Toast.jsx'
 import { getShowStatusInfo } from '../../../utils/showStatus.js'
 
 function HighlightedText({ segments }) {
-    return segments.map((segment, i) =>
-        segment.highlight ? (
+    let offset = 0
+    return segments.map((segment) => {
+        const key = `${offset}:${segment.text}`
+        offset += segment.text.length
+        return segment.highlight ? (
             <mark
-                key={i}
+                key={key}
                 style={{
                     backgroundColor: 'var(--color-accent-glow)',
                     color: 'var(--color-text)',
@@ -22,7 +25,7 @@ function HighlightedText({ segments }) {
         ) : (
             segment.text
         )
-    )
+    })
 }
 
 function FavoriteButton({ isFav, titleText, onClick }) {

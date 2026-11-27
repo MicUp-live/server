@@ -10,8 +10,7 @@ import {
     isFavoriteSong 
 } from '../utils/favoritesStore'
 import { SongVersionPicker } from './SongVersionPicker'
-import { WriteInSongFields } from './WriteInSongFields'
-import { StageAlertsOptIn } from './WriteInSongFields'
+import { WriteInSongFields, StageAlertsOptIn } from './WriteInSongFields'
 import { ShowStatusBanner } from './ShowStatusBanner'
 import { getShowStatusInfo } from '../utils/showStatus'
 import {

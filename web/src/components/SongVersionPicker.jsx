@@ -97,7 +97,7 @@ export function SongVersionPicker({ versions = [], selectedVersionId = '', onSel
                             style={{ accentColor: 'var(--color-accent)', flexShrink: 0 }}
                         />
                         <span style={{ display: 'flex', flexDirection: 'column', gap: '2px', fontWeight: 'var(--font-semibold)' }}>
-                            Host's Choice / Best Available
+                            <span>Host's Choice / Best Available</span>
                             <span style={{ fontWeight: 'var(--font-normal)', color: 'var(--color-text-dim)' }}>
                                 Let the host pick the best backing track
                             </span>

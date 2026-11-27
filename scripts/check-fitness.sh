@@ -20,7 +20,7 @@ npm --prefix web run check:tokens
 
 echo "=== 3. Checking Go Code Formatting ==="
 UNFORMATTED=$(gofmt -l internal/ cmd/ main.go 2>/dev/null || true)
-if [ -n "${UNFORMATTED}" ]; then
+if [[ -n "${UNFORMATTED}" ]]; then
   echo "Error: The following Go files are not formatted with gofmt:"
   echo "${UNFORMATTED}"
   echo "Run 'go fmt ./...' to fix."

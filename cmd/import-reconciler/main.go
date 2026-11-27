@@ -27,11 +27,15 @@ type reconcilerService interface {
 func initService(ctx context.Context) (*catalog.Service, func(), error) {
 	cfg, err := config.LoadWorkerEnvironment()
 	if err != nil {
-		return nil, func() {}, fmt.Errorf("load environment: %w", err)
+		return nil, func() {
+			// No-op cleanup returned when loading worker environment fails.
+		}, fmt.Errorf("load environment: %w", err)
 	}
 	db, err := backend.Open(ctx, cfg, false)
 	if err != nil {
-		return nil, func() {}, fmt.Errorf("connect to store: %w", err)
+		return nil, func() {
+			// No-op cleanup returned when connecting to the store fails.
+		}, fmt.Errorf("connect to store: %w", err)
 	}
 	awsCfg, err := awsclient.Load(ctx, awsclient.Config{
 		Region:      cfg.AWSRegion,
@@ -41,7 +45,9 @@ func initService(ctx context.Context) (*catalog.Service, func(), error) {
 	})
 	if err != nil {
 		_ = db.Close()
-		return nil, func() {}, fmt.Errorf("load aws config: %w", err)
+		return nil, func() {
+			// No-op cleanup returned after db is closed on AWS config failure.
+		}, fmt.Errorf("load aws config: %w", err)
 	}
 	queue := &importjob.Queue{URL: cfg.ImportJobQueueURL, Client: awsclient.NewSQS(awsCfg, cfg.SQSEndpoint)}
 	svc := &catalog.Service{

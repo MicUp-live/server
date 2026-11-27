@@ -52,7 +52,9 @@ func main() {
 func loadStore(cfg config.Config) (app.Dependencies, func(), error) {
 	s, err := backend.Open(context.Background(), cfg, cfg.Environment == config.Development)
 	if err != nil {
-		return app.Dependencies{}, func() {}, err
+		return app.Dependencies{}, func() {
+			// No-op cleanup returned when opening the store fails.
+		}, err
 	}
 
 	referenceStore := &reference.HybridStore{
@@ -61,7 +63,9 @@ func loadStore(cfg config.Config) (app.Dependencies, func(), error) {
 	}
 	s3Client, sqsClient, emailSender, err := configureAWS(cfg, referenceStore)
 	if err != nil {
-		return app.Dependencies{}, func() {}, err
+		return app.Dependencies{}, func() {
+			// No-op cleanup returned when AWS configuration fails.
+		}, err
 	}
 
 	deps := app.Dependencies{

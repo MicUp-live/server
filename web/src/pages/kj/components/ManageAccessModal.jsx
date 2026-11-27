@@ -34,7 +34,8 @@ export function ManageAccessModal({ isOpen, songbook, onClose }) {
     useEffect(() => {
         if (isOpen && songbook?.id) {
             setConfirmRemove(null)
-            loadAccess()
+            // Errors are caught and reflected in modal error state inside loadAccess().
+            void loadAccess()
         }
     }, [isOpen, songbook?.id])
 

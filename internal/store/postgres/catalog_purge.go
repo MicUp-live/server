@@ -253,8 +253,7 @@ func resolvePurgeCatalogOptions(opts []store.PurgeCatalogOptions) store.PurgeCat
 
 func (s *Store) purgeExistingCatalogPrefix(
 	ctx context.Context,
-	catalogID string,
-	prefix string,
+	catalogID, prefix string,
 	existing *models.CatalogVersion,
 	purgeAssets func(assetPrefix string) error,
 	opt store.PurgeCatalogOptions,
@@ -288,9 +287,7 @@ func (s *Store) purgeExistingCatalogPrefix(
 
 func (s *Store) reserveOrphanCatalogPrefix(
 	ctx context.Context,
-	catalogID string,
-	prefix string,
-	token string,
+	catalogID, prefix, token string,
 	leaseDuration time.Duration,
 ) error {
 	now := s.currentTime()

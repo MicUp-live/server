@@ -324,7 +324,7 @@ function rowToSong(row, idx, mapping, seenFingerprints) {
 
     const disc = readCell(row, discIndex)
     const source = readCell(row, sourceIndex)
-    const track = parseInt(readCell(row, trackIndex), 10) || 0
+    const track = Number.parseInt(readCell(row, trackIndex), 10) || 0
     const genre = readCell(row, genreIndex)
     const rawVideoUrl = readCell(row, videoUrlIndex)
     const videoUrl = /^https?:\/\//i.test(rawVideoUrl) ? rawVideoUrl : ''

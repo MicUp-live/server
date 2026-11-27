@@ -1,3 +1,4 @@
+import { useId } from 'preact/hooks'
 import { showToast } from '../../../components/Toast.jsx'
 
 export const DEFAULT_SETTINGS_FORM = {
@@ -172,6 +173,7 @@ function MaxActivePresetButton({ preset, active, onSelect }) {
 }
 
 export function MaxActivePerSingerSection({ maxActive, onChangeMaxActive }) {
+    const maxActiveId = useId()
     const isUnlimited = maxActive === 0
 
     return (
@@ -183,7 +185,7 @@ export function MaxActivePerSingerSection({ maxActive, onChangeMaxActive }) {
             marginBottom: 'var(--space-6)',
         }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--space-1)' }}>
-                <label style={{ fontSize: 'var(--text-sm)', fontWeight: 'bold', color: 'var(--color-text)' }}>
+                <label htmlFor={maxActiveId} style={{ fontSize: 'var(--text-sm)', fontWeight: 'bold', color: 'var(--color-text)' }}>
                     🎤 Active Requests Limit per Singer
                 </label>
                 <span style={{
@@ -204,11 +206,12 @@ export function MaxActivePerSingerSection({ maxActive, onChangeMaxActive }) {
 
             <div style={{ display: 'flex', gap: 'var(--space-2)', alignItems: 'center', flexWrap: 'wrap', marginBottom: 'var(--space-2)' }}>
                 <input
+                    id={maxActiveId}
                     type="number"
                     min={0}
                     max={100}
                     value={maxActive}
-                    onChange={e => onChangeMaxActive(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                    onChange={e => onChangeMaxActive(Math.max(0, Number.parseInt(e.target.value, 10) || 0))}
                     style={{
                         width: '90px',
                         fontSize: 'var(--text-sm)',
@@ -248,13 +251,13 @@ export function OpenKJSyncSection({ openkjKey, rotatingKey, onRotateOpenKJKey })
     const endpointUrl = getOpenKJEndpointUrl()
 
     const handleCopyEndpoint = () => {
-        navigator.clipboard.writeText(endpointUrl)
+        void navigator.clipboard.writeText(endpointUrl)
         showToast('Copied OpenKJ Endpoint URL!')
     }
 
     const handleCopyKey = () => {
         if (!openkjKey) return
-        navigator.clipboard.writeText(openkjKey)
+        void navigator.clipboard.writeText(openkjKey)
         showToast('Copied Venue Key!')
     }
 

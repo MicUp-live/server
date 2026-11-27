@@ -152,8 +152,7 @@ func (s *Service) buildSubmittedRequest(
 	event *models.Event,
 	input validatedSubmitInput,
 	existingReqs []*models.SongRequest,
-	completedCount int,
-	activeAhead int,
+	completedCount, activeAhead int,
 ) (*models.SongRequest, []string) {
 	initialStatus := resolveInitialStatus(event)
 	now := time.Now().UTC()

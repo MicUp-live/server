@@ -27,11 +27,9 @@ export {
 } from '../utils/overlayCatalog.js'
 import {
     getLetterBucket,
-    normalizePublicOverrides,
     applyPublicOverrides,
     searchSongs,
     mergePendingSearchResults,
-    loadOverlayOnlyCatalog,
 } from '../utils/overlayCatalog.js'
 
 export function useCatalogSearch({ resolvedSongbookId, eventCode, eventId, favSongs = [], favArtists = [], viewMode = 'songs', retryCount = 0 }) {

@@ -80,7 +80,9 @@ func loadStore(cfg config.Config) (app.Dependencies, func(), error) {
 		EmailSender:    emailSender,
 	}
 	if err := configureCatalog(&deps, cfg, s3Client, sqsClient); err != nil {
-		return app.Dependencies{}, func() {}, err
+		return app.Dependencies{}, func() {
+			// No-op cleanup returned when catalog configuration fails.
+		}, err
 	}
 	configureImport(&deps, cfg, s, s3Client, sqsClient)
 

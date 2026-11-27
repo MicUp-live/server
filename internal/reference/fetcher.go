@@ -283,7 +283,11 @@ func resolveImmutableCache(ctx context.Context, src SourceConfig, ext string, pr
 func fetchOrFallbackUpstream(ctx context.Context, src SourceConfig, ext string, prev *ArchivedSource, opts FetchOptions, nowRFC3339 string) (*ResolvedRawSource, error) {
 	raw, status, etag, lastMod, fetchErr := fetchUpstreamWithRetries(ctx, src, prev, opts)
 	if fetchErr == nil && status == http.StatusNotModified {
-		if res, ok := resolveNotModifiedCache(ctx, src, ext, prev, opts, etag, lastMod, nowRFC3339); ok {
+		if res, ok := resolveNotModifiedCache(ctx, src, ext, prev, opts, notModifiedMeta{
+			etag:       etag,
+			lastMod:    lastMod,
+			nowRFC3339: nowRFC3339,
+		}); ok {
 			return res, nil
 		}
 		// Cached body for 304 Not Modified is missing or mismatched; re-fetch unconditionally without ETag/If-Modified-Since.
@@ -310,7 +314,13 @@ func fetchOrFallbackUpstream(ctx context.Context, src SourceConfig, ext string, 
 	return resolveCachedFallback(ctx, src, ext, prev, opts, nowRFC3339, fetchErr)
 }
 
-func resolveNotModifiedCache(ctx context.Context, src SourceConfig, ext string, prev *ArchivedSource, opts FetchOptions, etag, lastMod, nowRFC3339 string) (*ResolvedRawSource, bool) {
+type notModifiedMeta struct {
+	etag       string
+	lastMod    string
+	nowRFC3339 string
+}
+
+func resolveNotModifiedCache(ctx context.Context, src SourceConfig, ext string, prev *ArchivedSource, opts FetchOptions, meta notModifiedMeta) (*ResolvedRawSource, bool) {
 	cachedRaw, _, cacheErr := loadCachedRawBytes(ctx, src, ext, prev, opts.Store, opts.ArchiveDir, src.Format != "billboard_csv")
 	if cacheErr != nil {
 		return nil, false
@@ -320,6 +330,7 @@ func resolveNotModifiedCache(ctx context.Context, src SourceConfig, ext string, 
 			return nil, false
 		}
 	}
+	etag, lastMod := meta.etag, meta.lastMod
 	if prev != nil {
 		if etag == "" {
 			etag = prev.ETag
@@ -328,8 +339,8 @@ func resolveNotModifiedCache(ctx context.Context, src SourceConfig, ext string, 
 			lastMod = prev.LastModified
 		}
 	}
-	res, err := buildResolvedRawSource(src, cachedRaw, nowRFC3339, resolvedSourceMeta{
-		fetchedAt: nowRFC3339,
+	res, err := buildResolvedRawSource(src, cachedRaw, meta.nowRFC3339, resolvedSourceMeta{
+		fetchedAt: meta.nowRFC3339,
 		etag:      etag,
 		lastMod:   lastMod,
 		origin:    OriginHTTP304,

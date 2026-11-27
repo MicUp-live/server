@@ -1,5 +1,5 @@
 // Web Worker for offline canonical reference lookup, local parsing, inverted column detection, and typo suggestions.
-import { resolveProvider, extractDiscCode } from '../utils/karaokeProvider.js';
+export { resolveProvider, extractDiscCode } from '../utils/karaokeProvider.js';
 import { parseFolderFilesLocal } from '../utils/folderParser.js';
 import { detectDelimiter, parseDelimitedText, detectSoftwareProfile, rowsToSongs } from '../utils/csvParser.js';
 import { isVirtualDJDatabaseXML, parseVirtualDJDatabase } from '../utils/virtualDjParser.js';
@@ -15,7 +15,7 @@ import {
   tryTypoMatch,
   buildCustomTrack,
 } from './referenceAuditHelpers.js';
-import {
+export {
   removeDiacritics,
   uninvertArtist,
   uninvertTitle,
@@ -29,23 +29,6 @@ import {
   boundedLevenshtein,
   levenshteinDistance,
 } from '../utils/songNormalize.js';
-
-export {
-  resolveProvider,
-  extractDiscCode,
-  removeDiacritics,
-  uninvertArtist,
-  uninvertTitle,
-  ARTIST_ALIASES,
-  stripNoiseTags,
-  normalizeKey,
-  normalizeArtist,
-  normalizeTitle,
-  compositeKey,
-  normalizeDiscCode,
-  boundedLevenshtein,
-  levenshteinDistance,
-};
 
 let dictionary = null;
 let discMap = null;

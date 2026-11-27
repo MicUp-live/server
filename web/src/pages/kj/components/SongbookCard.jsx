@@ -1,8 +1,12 @@
+import { useId } from 'preact/hooks'
 import { ActionPopover } from '../../../components/ui/ActionPopover.jsx'
 import { resolveSongbookShowState } from '../hooks/useStartShowHandoff.js'
 import { getSongbookPermissions } from '../../../utils/songbookPermissions.js'
 
 function SongbookEditForm({ editing, saving, onChange, onSubmit, onCancel }) {
+    const nameId = useId()
+    const slugId = useId()
+
     return (
         <form
             onSubmit={event => {
@@ -12,12 +16,13 @@ function SongbookEditForm({ editing, saving, onChange, onSubmit, onCancel }) {
             style={{ display: 'flex', flexDirection: 'column', gap: 'var(--space-3)', padding: 'var(--space-2) 0' }}
         >
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', fontWeight: 'bold' }}>Songbook Name</label>
-                <input value={editing.name} onInput={event => onChange({ ...editing, name: event.target.value })} required autoFocus />
+                <label htmlFor={nameId} style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', fontWeight: 'bold' }}>Songbook Name</label>
+                <input id={nameId} value={editing.name} onInput={event => onChange({ ...editing, name: event.target.value })} required />
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
-                <label style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', fontWeight: 'bold' }}>Short Code / Custom Slug (e.g. DAVEMIC)</label>
+                <label htmlFor={slugId} style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', fontWeight: 'bold' }}>Short Code / Custom Slug (e.g. DAVEMIC)</label>
                 <input
+                    id={slugId}
                     value={editing.slug || ''}
                     onInput={event => onChange({ ...editing, slug: event.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, '') })}
                     placeholder="optional short code, e.g. davemic"
@@ -27,7 +32,7 @@ function SongbookEditForm({ editing, saving, onChange, onSubmit, onCancel }) {
                 </span>
             </div>
             <div style={{ display: 'flex', gap: 'var(--space-2)' }}>
-                <button class="btn btn-primary btn-sm" disabled={saving}>Save Changes</button>
+                <button type="submit" class="btn btn-primary btn-sm" disabled={saving}>Save Changes</button>
                 <button type="button" class="btn btn-secondary btn-sm" onClick={onCancel}>Cancel</button>
             </div>
         </form>

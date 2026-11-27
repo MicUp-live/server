@@ -70,7 +70,7 @@ function getRedirectTarget(returnTo) {
 
 function validatePasswordAuth({ mode, cleanName, cleanEmail, password }) {
     if (mode === 'register' && !cleanName) return 'Name is required to create an account'
-    if (!cleanEmail || !cleanEmail.includes('@')) return 'A valid email address is required'
+    if (!cleanEmail?.includes('@')) return 'A valid email address is required'
     if (!password) return 'Password is required'
     if (mode === 'register' && password.length < 8) return 'Password must be at least 8 characters'
     return ''
@@ -461,13 +461,13 @@ export function Login({ returnTo }) {
     })
     const handlePasswordAuth = (e) => {
         e.preventDefault()
-        submitPasswordAuth({
+        void submitPasswordAuth({
             mode, email, password, displayName, isKjHost, returnTo, setError, setSubmitting,
         })
     }
     const handleForgotPassword = (e) => {
         e.preventDefault()
-        submitForgotPassword({ email, setError, setSubmitting, setForgotSuccess })
+        void submitForgotPassword({ email, setError, setSubmitting, setForgotSuccess })
     }
 
     const copy = MODE_COPY[mode] || MODE_COPY.signin

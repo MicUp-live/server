@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+#MISE description="Build production Go binary"
+set -euo pipefail
+
+exec go build -ldflags="-s -w" -o dist/micup-server main.go

@@ -10,7 +10,6 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-!mise-tasks/build/
 *.egg
 
 # Environment
@@ -49,6 +48,10 @@ micup.json
 # Go
 micup-server
 server
+
+# Always track mise file-based tasks
+!mise-tasks/
+!mise-tasks/**
 
 # OpenTofu / Terraform
 *.tfstate

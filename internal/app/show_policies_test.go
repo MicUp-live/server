@@ -174,8 +174,9 @@ func assertPreCallSwapAndUpNextLock(t *testing.T, h *crossAdapterHarness, eventI
 	}
 }
 
-func assertAbsentDeferAndCrossTenantDenial(t *testing.T, h *crossAdapterHarness, eventID string, r1, r2, r3, r4, r5 models.SongRequest) {
+func assertAbsentDeferAndCrossTenantDenial(t *testing.T, h *crossAdapterHarness, eventID string, reqs []models.SongRequest) {
 	t.Helper()
+	r1, r2, r3, r4, r5 := reqs[0], reqs[1], reqs[2], reqs[3], reqs[4]
 	if crossRec := sendDeferRequest(h.router, eventID, r1.ID, h.sessionTokenB, ""); crossRec.Code != http.StatusNotFound && crossRec.Code != http.StatusForbidden {
 		t.Fatalf("cross-tenant defer status = %d; want 404 or 403", crossRec.Code)
 	}
@@ -220,5 +221,5 @@ func TestRouterShowPolicies_SongReplacementAndAbsentDeferral(t *testing.T) {
 
 	assertTokenCapabilitySeparation(t, h.router, ev.ID, r1, r2, swapBody)
 	assertPreCallSwapAndUpNextLock(t, h, ev.ID, r1, swapBody)
-	assertAbsentDeferAndCrossTenantDenial(t, h, ev.ID, r1, r2, r3, r4, r5)
+	assertAbsentDeferAndCrossTenantDenial(t, h, ev.ID, []models.SongRequest{r1, r2, r3, r4, r5})
 }

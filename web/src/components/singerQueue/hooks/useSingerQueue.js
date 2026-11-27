@@ -251,7 +251,7 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, allowSongRepl
         if (!originatingKey || !eventId) return { ok: false, error: 'Show not connected' }
         const originatingStored = getSingerRequests(originatingKey)
         const myReq = originatingStored.find(r => r.id === reqId)
-        if (!myReq || !myReq.edit_token) {
+        if (!myReq?.edit_token) {
             return { ok: false, error: 'This request cannot be edited from this device.' }
         }
         try {

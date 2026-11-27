@@ -385,6 +385,21 @@ func (s *Store) UpdateEventWithVersion(ctx context.Context, ev *models.Event, bu
 	return nil
 }
 
+func updateRequestRotationTx(ctx context.Context, tx pgx.Tx, eventID string, req *models.SongRequest, now time.Time) error {
+	if req == nil || req.ID == "" {
+		return fmt.Errorf("transition queue rotation: invalid request: %w", os.ErrInvalid)
+	}
+	tag, err := tx.Exec(ctx, `UPDATE event_requests SET rank = $1, round = $2, updated_at = $3 WHERE id = $4 AND event_id = $5`,
+		req.Rank, req.Round, now, req.ID, eventID)
+	if err != nil {
+		return fmt.Errorf("update request %s during rotation transition: %w", req.ID, err)
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("request %s not found in event %s: %w", req.ID, eventID, os.ErrNotExist)
+	}
+	return nil
+}
+
 // TransitionQueueRotation atomically applies a queue rotation mode transition,
 // persisting the updated requests and event metadata in a single transaction.
 func (s *Store) TransitionQueueRotation(ctx context.Context, ev *models.Event, reqs []*models.SongRequest) error {
@@ -405,16 +420,8 @@ func (s *Store) TransitionQueueRotation(ctx context.Context, ev *models.Event, r
 			return txErr
 		}
 		for _, req := range reqs {
-			if req == nil || req.ID == "" {
-				return fmt.Errorf("transition queue rotation: invalid request: %w", os.ErrInvalid)
-			}
-			tag, err := tx.Exec(ctx, `UPDATE event_requests SET rank = $1, round = $2, updated_at = $3 WHERE id = $4 AND event_id = $5`,
-				req.Rank, req.Round, now, req.ID, ev.ID)
-			if err != nil {
-				return fmt.Errorf("update request %s during rotation transition: %w", req.ID, err)
-			}
-			if tag.RowsAffected() == 0 {
-				return fmt.Errorf("request %s not found in event %s: %w", req.ID, ev.ID, os.ErrNotExist)
+			if err := updateRequestRotationTx(ctx, tx, ev.ID, req, now); err != nil {
+				return err
 			}
 		}
 		return nil

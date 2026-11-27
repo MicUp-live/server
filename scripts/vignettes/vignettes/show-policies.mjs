@@ -36,10 +36,10 @@ export async function run(runner, config) {
   const host = await runner.addActor('host', { label: 'KJ', role: 'host', storageStatePath: config.hostStorageState })
   const stage = await runner.addActor('stage', { label: 'Stage TV', role: 'stage' })
   const singerNames = ['Avery', 'Blake', 'Casey', 'Drew', 'Ellis']
-  const singers = {}
-  for (const singerName of singerNames) {
-    singers[singerName] = await runner.addActor(singerName, { label: singerName, role: 'mobile' })
-  }
+  const singerActors = await Promise.all(
+    singerNames.map((singerName) => runner.addActor(singerName, { label: singerName, role: 'mobile' }))
+  )
+  const singers = Object.fromEntries(singerNames.map((singerName, i) => [singerName, singerActors[i]]))
 
   let show
   let songNumber = 0
@@ -72,9 +72,10 @@ export async function run(runner, config) {
       ...Object.values(singers).slice(1).map((s) => s.page.goto(`/event/${show.eventId}`)),
     ])
 
-    for (const singerName of singerNames) {
-      await submit(singerName, singerName === 'Avery' ? 'Original Ballad' : undefined)
-    }
+    await singerNames.reduce(
+      (chain, singerName) => chain.then(() => submit(singerName, singerName === 'Avery' ? 'Original Ballad' : undefined)),
+      Promise.resolve()
+    )
     const initialQueue = await assertQueueOrder(host, stage, show.eventId, singerNames)
     assert.equal(initialQueue.allow_song_replacement, true, 'New shows default allow_song_replacement=true')
 

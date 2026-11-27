@@ -14,6 +14,20 @@ import (
 	"micup.live/server/internal/store"
 )
 
+const (
+	errMsgEventNotFound = "event not found"
+	headerContentType   = "Content-Type"
+	mimeApplicationJSON = "application/json"
+)
+
+func writePolicyJSON(w http.ResponseWriter, status int, payload any) {
+	w.Header().Set(headerContentType, mimeApplicationJSON)
+	if status != http.StatusOK {
+		w.WriteHeader(status)
+	}
+	_ = json.NewEncoder(w).Encode(payload)
+}
+
 // ReplaceEventRequestSong allows an authorized singer (holding the request's
 // domain-separated edit_token) to swap their queued song before being called.
 func (h *QueueHandler) ReplaceEventRequestSong(w http.ResponseWriter, r *http.Request) {
@@ -26,7 +40,7 @@ func (h *QueueHandler) ReplaceEventRequestSong(w http.ResponseWriter, r *http.Re
 
 	event, err := h.resolveEvent(r, id)
 	if err != nil || event == nil {
-		http.Error(w, "event not found", http.StatusNotFound)
+		http.Error(w, errMsgEventNotFound, http.StatusNotFound)
 		return
 	}
 
@@ -54,41 +68,42 @@ func (h *QueueHandler) ReplaceEventRequestSong(w http.ResponseWriter, r *http.Re
 		Notes:      payload.Notes,
 	})
 	if err != nil {
-		switch {
-		case errors.Is(err, queue.ErrUnauthorized):
-			http.Error(w, "unauthorized: valid edit token required", http.StatusForbidden)
-		case errors.Is(err, queue.ErrRequestNotFound):
-			http.Error(w, "request not found", http.StatusNotFound)
-		case errors.Is(err, queue.ErrEventNotFound):
-			http.Error(w, "event not found", http.StatusNotFound)
-		case errors.Is(err, queue.ErrShowEnded):
-			http.Error(w, "this show has ended", http.StatusGone)
-		case errors.Is(err, queue.ErrSongReplacementDisabled):
-			http.Error(w, "song replacement is disabled for this show", http.StatusForbidden)
-		case errors.Is(err, queue.ErrWriteInsDisabled):
-			http.Error(w, "write-in requests are not enabled for this show", http.StatusForbidden)
-		case errors.Is(err, queue.ErrRequestAlreadyCalled):
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":   "request_already_called",
-				"message": "Your song has already been called to stage and can no longer be changed here. Please ask the host.",
-			})
-		case errors.Is(err, store.ErrAdmissionConflict):
-			http.Error(w, "queue changed; please retry", http.StatusConflict)
-		case errors.Is(err, os.ErrInvalid):
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		default:
-			http.Error(w, "failed to replace song", http.StatusInternalServerError)
-		}
+		writeReplaceSongError(w, err)
 		return
 	}
 
 	if newVersion > 0 {
 		w.Header().Set("X-Queue-Version", strconv.FormatInt(newVersion, 10))
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updated)
+	writePolicyJSON(w, http.StatusOK, updated)
+}
+
+func writeReplaceSongError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, queue.ErrUnauthorized):
+		http.Error(w, "unauthorized: valid edit token required", http.StatusForbidden)
+	case errors.Is(err, queue.ErrRequestNotFound):
+		http.Error(w, "request not found", http.StatusNotFound)
+	case errors.Is(err, queue.ErrEventNotFound):
+		http.Error(w, errMsgEventNotFound, http.StatusNotFound)
+	case errors.Is(err, queue.ErrShowEnded):
+		http.Error(w, "this show has ended", http.StatusGone)
+	case errors.Is(err, queue.ErrSongReplacementDisabled):
+		http.Error(w, "song replacement is disabled for this show", http.StatusForbidden)
+	case errors.Is(err, queue.ErrWriteInsDisabled):
+		http.Error(w, "write-in requests are not enabled for this show", http.StatusForbidden)
+	case errors.Is(err, queue.ErrRequestAlreadyCalled):
+		writePolicyJSON(w, http.StatusConflict, map[string]string{
+			"error":   "request_already_called",
+			"message": "Your song has already been called to stage and can no longer be changed here. Please ask the host.",
+		})
+	case errors.Is(err, store.ErrAdmissionConflict):
+		http.Error(w, "queue changed; please retry", http.StatusConflict)
+	case errors.Is(err, os.ErrInvalid):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	default:
+		http.Error(w, "failed to replace song", http.StatusInternalServerError)
+	}
 }
 
 // DeferEventRequest allows the host to explicitly defer an absent singer down
@@ -137,23 +152,7 @@ func (h *QueueHandler) DeferEventRequest(w http.ResponseWriter, r *http.Request)
 		if writeIdempotencyConflict(w, err) || writeQueueVersionConflict(w, err, expectedQueueVersion(payload.ExpectedQueueVersion)) {
 			return
 		}
-		switch {
-		case errors.Is(err, queue.ErrRequestNotFound):
-			http.Error(w, "request not found", http.StatusNotFound)
-		case errors.Is(err, queue.ErrEventNotFound):
-			http.Error(w, "event not found", http.StatusNotFound)
-		case errors.Is(err, queue.ErrRequestNotDeferrable):
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"error":   "request_not_deferrable",
-				"message": "Only active or called requests can be deferred.",
-			})
-		case errors.Is(err, os.ErrInvalid):
-			http.Error(w, err.Error(), http.StatusBadRequest)
-		default:
-			http.Error(w, "failed to defer request", http.StatusInternalServerError)
-		}
+		writeDeferError(w, err)
 		return
 	}
 
@@ -165,6 +164,23 @@ func (h *QueueHandler) DeferEventRequest(w http.ResponseWriter, r *http.Request)
 	if payload.ExpectedQueueVersion != nil {
 		w.Header().Set("X-Queue-Version", strconv.FormatInt(*payload.ExpectedQueueVersion+1, 10))
 	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(updatedReq)
+	writePolicyJSON(w, http.StatusOK, updatedReq)
+}
+
+func writeDeferError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, queue.ErrRequestNotFound):
+		http.Error(w, "request not found", http.StatusNotFound)
+	case errors.Is(err, queue.ErrEventNotFound):
+		http.Error(w, errMsgEventNotFound, http.StatusNotFound)
+	case errors.Is(err, queue.ErrRequestNotDeferrable):
+		writePolicyJSON(w, http.StatusConflict, map[string]string{
+			"error":   "request_not_deferrable",
+			"message": "Only active or called requests can be deferred.",
+		})
+	case errors.Is(err, os.ErrInvalid):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	default:
+		http.Error(w, "failed to defer request", http.StatusInternalServerError)
+	}
 }

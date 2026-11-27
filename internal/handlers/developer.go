@@ -142,47 +142,61 @@ func DeveloperFromContext(ctx context.Context) *models.DeveloperKey {
 // verifies it is unrevoked and unexpired, and attaches it to the request context.
 func (h *DeveloperHandler) RequireDeveloperKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimSpace(r.Header.Get("Authorization"))
-		token = strings.TrimPrefix(token, "Bearer ")
-		if !strings.HasPrefix(token, developerKeyPrefix) {
-			h.fail(w, http.StatusUnauthorized, "developer key required", "")
-			return
-		}
-		key, err := h.store.GetDeveloperKey(r.Context(), token)
-		if err != nil || key == nil {
-			h.fail(w, http.StatusUnauthorized, "invalid developer key", ref(token))
-			return
-		}
-		if key.Revoked {
-			h.fail(w, http.StatusForbidden, "developer key revoked", key.ID)
-			return
-		}
-		if !key.ExpiresAt.IsZero() && time.Now().UTC().After(key.ExpiresAt) {
-			h.fail(w, http.StatusForbidden, "developer key expired", key.ID)
+		key, ok := h.authenticateDeveloperKey(w, r)
+		if !ok {
 			return
 		}
 		_ = h.store.TouchDeveloperKeyLastUsed(r.Context(), key.ID)
-		ctx := r.Context()
-		if h.authStore != nil {
-			user, err := h.authStore.GetUser(r.Context(), key.OwnerID)
-			if err != nil || user == nil || user.Deleting {
-				h.fail(w, http.StatusUnauthorized, "developer key owner not found", key.ID)
-				return
-			}
-			if !user.IsHost {
-				h.fail(w, http.StatusForbidden, "host access is required", key.ID)
-				return
-			}
-			ctx = context.WithValue(ctx, userContextKey, user)
-		} else {
-			ctx = context.WithValue(ctx, userContextKey, &models.User{
-				ID:     key.OwnerID,
-				IsHost: true,
-			})
+		user, ok := h.resolveDeveloperUser(w, r, key)
+		if !ok {
+			return
 		}
+		ctx := context.WithValue(r.Context(), userContextKey, user)
 		ctx = context.WithValue(ctx, DeveloperKeyContextKey{}, key)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	}
+}
+
+func (h *DeveloperHandler) authenticateDeveloperKey(w http.ResponseWriter, r *http.Request) (*models.DeveloperKey, bool) {
+	token := strings.TrimSpace(r.Header.Get("Authorization"))
+	token = strings.TrimPrefix(token, "Bearer ")
+	if !strings.HasPrefix(token, developerKeyPrefix) {
+		h.fail(w, http.StatusUnauthorized, "developer key required", "")
+		return nil, false
+	}
+	key, err := h.store.GetDeveloperKey(r.Context(), token)
+	if err != nil || key == nil {
+		h.fail(w, http.StatusUnauthorized, "invalid developer key", ref(token))
+		return nil, false
+	}
+	if key.Revoked {
+		h.fail(w, http.StatusForbidden, "developer key revoked", key.ID)
+		return nil, false
+	}
+	if !key.ExpiresAt.IsZero() && time.Now().UTC().After(key.ExpiresAt) {
+		h.fail(w, http.StatusForbidden, "developer key expired", key.ID)
+		return nil, false
+	}
+	return key, true
+}
+
+func (h *DeveloperHandler) resolveDeveloperUser(w http.ResponseWriter, r *http.Request, key *models.DeveloperKey) (*models.User, bool) {
+	if h.authStore == nil {
+		return &models.User{
+			ID:     key.OwnerID,
+			IsHost: true,
+		}, true
+	}
+	user, err := h.authStore.GetUser(r.Context(), key.OwnerID)
+	if err != nil || user == nil || user.Deleting {
+		h.fail(w, http.StatusUnauthorized, "developer key owner not found", key.ID)
+		return nil, false
+	}
+	if !user.IsHost {
+		h.fail(w, http.StatusForbidden, "host access is required", key.ID)
+		return nil, false
+	}
+	return user, true
 }
 
 // RequireScope checks the route scope after RequireDeveloperKey has attached a

@@ -105,45 +105,13 @@ func (s *Service) CreateEvent(ctx context.Context, ownerID string, req models.Ev
 		pin = GenerateKioskPIN()
 	}
 
-	rotationMode := models.RotationModeRoundRobin
-	if req.RotationMode != "" {
-		mode := strings.ToLower(strings.TrimSpace(req.RotationMode))
-		if mode == models.RotationModeRoundRobin || mode == models.RotationModeFairPriority || mode == models.RotationModeFCFS || mode == models.RotationModeManual {
-			rotationMode = mode
-		}
-	}
-	autoAccept := false
-	if req.AutoAccept != nil {
-		autoAccept = *req.AutoAccept
-	}
-	submissionDelay := 0
-	if req.SubmissionDelay != nil {
-		submissionDelay = *req.SubmissionDelay
-		if submissionDelay < 0 {
-			submissionDelay = 0
-		} else if submissionDelay > 600 {
-			submissionDelay = 600
-		}
-	}
-	maxActive := 1
-	if req.MaxActivePerSinger != nil {
-		maxActive = *req.MaxActivePerSinger
-		if maxActive < 0 {
-			maxActive = 0
-		}
-	}
-	allowKeyChange := false
-	if req.AllowKeyChange != nil {
-		allowKeyChange = *req.AllowKeyChange
-	}
-	allowWriteIns := false
-	if req.AllowWriteIns != nil {
-		allowWriteIns = *req.AllowWriteIns
-	}
-	allowSongReplacement := true
-	if req.AllowSongReplacement != nil {
-		allowSongReplacement = *req.AllowSongReplacement
-	}
+	rotationMode := normalizeRotationMode(req.RotationMode)
+	autoAccept := boolOrDefault(req.AutoAccept, false)
+	submissionDelay := clampSubmissionDelay(req.SubmissionDelay)
+	maxActive := clampMaxActivePerSinger(req.MaxActivePerSinger)
+	allowKeyChange := boolOrDefault(req.AllowKeyChange, false)
+	allowWriteIns := boolOrDefault(req.AllowWriteIns, false)
+	allowSongReplacement := boolOrDefault(req.AllowSongReplacement, true)
 
 	eventID := uuid.NewString()
 	event := &models.Event{
@@ -216,20 +184,7 @@ func (s *Service) GetPublicEvent(ctx context.Context, id string) (*models.Public
 	if err != nil {
 		return nil, ErrEventNotFound
 	}
-	if event.SongbookID == "" {
-		return s.buildPublicEvent(event, s.detachedPublicSongbook(event)), nil
-	}
-	if s.Songbooks == nil {
-		return nil, ErrLinkedBookNotFound
-	}
-	sb, err := s.Songbooks.GetSongbook(ctx, event.SongbookID)
-	if err != nil || sb == nil {
-		if event.Status == models.EventStatusEnded {
-			return s.buildPublicEvent(event, s.detachedPublicSongbook(event)), nil
-		}
-		return nil, ErrLinkedBookNotFound
-	}
-	return s.buildPublicEvent(event, sb), nil
+	return s.resolvePublicEvent(ctx, event)
 }
 
 // GetEventByCode resolves an event by its short join code (e.g. "OMALLEY") or falls back to public songbook.
@@ -241,46 +196,17 @@ func (s *Service) GetEventByCode(ctx context.Context, code string) (*CodeResolut
 	if code == "" {
 		return nil, ErrEventNotFound
 	}
-	event, err := s.Events.GetEventByJoinCode(ctx, code)
-	if err == nil && event != nil {
-		if event.SongbookID == "" {
-			return &CodeResolutionResult{Type: "event", Event: s.buildPublicEvent(event, s.detachedPublicSongbook(event))}, nil
+	if event, err := s.Events.GetEventByJoinCode(ctx, code); err == nil && event != nil {
+		pub, pubErr := s.resolvePublicEvent(ctx, event)
+		if pubErr != nil {
+			return nil, pubErr
 		}
-		if s.Songbooks == nil {
-			return nil, ErrLinkedBookNotFound
-		}
-		sb, sbErr := s.Songbooks.GetSongbook(ctx, event.SongbookID)
-		if sbErr != nil || sb == nil {
-			if event.Status == models.EventStatusEnded {
-				return &CodeResolutionResult{Type: "event", Event: s.buildPublicEvent(event, s.detachedPublicSongbook(event))}, nil
-			}
-			return nil, ErrLinkedBookNotFound
-		}
-		return &CodeResolutionResult{
-			Type:  "event",
-			Event: s.buildPublicEvent(event, sb),
-		}, nil
+		return &CodeResolutionResult{Type: "event", Event: pub}, nil
 	}
 
 	// Fall back to public songbook by slug or public ID
-	if s.Songbooks != nil {
-		if sb, sbErr := s.Songbooks.GetPublicSongbook(ctx, code); sbErr == nil && sb != nil {
-			slugOrID := sb.Slug
-			if slugOrID == "" {
-				slugOrID = sb.PublicID
-			}
-			return &CodeResolutionResult{
-				Type: "songbook",
-				Songbook: &PublicSongbookInfo{
-					ID:         sb.ID,
-					PublicID:   sb.PublicID,
-					Slug:       sb.Slug,
-					Name:       sb.Name,
-					SongCount:  sb.SongCount,
-					TargetPath: "/book/" + slugOrID,
-				},
-			}, nil
-		}
+	if res := s.lookupPublicSongbookByCode(ctx, code); res != nil {
+		return res, nil
 	}
 
 	return nil, ErrEventNotFound
@@ -330,62 +256,18 @@ func (s *Service) UpdateEvent(ctx context.Context, id string, update models.Even
 	}
 	applyEventSettingsUpdate(event, update)
 
-	var modeTransitionRequests []*models.SongRequest
-	if update.RotationMode != nil {
-		mode := strings.TrimSpace(*update.RotationMode)
-		if (mode == models.RotationModeRoundRobin || mode == models.RotationModeFairPriority || mode == models.RotationModeFCFS || mode == models.RotationModeManual) && mode != event.RotationMode {
-			oldMode := event.RotationMode
-			var planErr error
-			modeTransitionRequests, planErr = s.planQueueRotationTransition(ctx, event, oldMode, mode)
-			if planErr != nil {
-				return nil, ErrFailedTransition
-			}
-			event.RotationMode = mode
-		}
+	modeTransitionRequests, err := s.applyRotationModeUpdate(ctx, event, update.RotationMode)
+	if err != nil {
+		return nil, err
 	}
-
-	if update.Status != nil {
-		switch *update.Status {
-		case models.EventStatusActive, models.EventStatusPaused:
-			event.Status = *update.Status
-			event.EndedAt = nil
-			event.TTL = 0
-		case models.EventStatusEnded:
-			event.Status = *update.Status
-			if event.EndedAt == nil || event.TTL == 0 {
-				now := time.Now().UTC()
-				event.EndedAt = &now
-				event.TTL = now.Add(s.QueueRetentionDuration()).Unix()
-			}
-		default:
-			return nil, ErrInvalidStatus
-		}
+	if err := s.applyStatusUpdate(event, update.Status); err != nil {
+		return nil, err
 	}
-
-	if len(modeTransitionRequests) > 0 {
-		if err := s.Events.TransitionQueueRotation(fencedCtx, event, modeTransitionRequests); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, ErrEventNotFound
-			}
-			return nil, err
-		}
-	} else {
-		if err := s.Events.UpdateEventWithVersion(fencedCtx, event, true); err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil, ErrEventNotFound
-			}
-			return nil, err
-		}
+	if err := s.persistUpdatedEvent(fencedCtx, event, modeTransitionRequests); err != nil {
+		return nil, err
 	}
-
-	if update.Status != nil && s.Requests != nil {
-		var expiresAt time.Time
-		if event.TTL > 0 {
-			expiresAt = time.Unix(event.TTL, 0)
-		}
-		if err := s.Requests.SetRequestsTTLByEvent(ctx, event.ID, expiresAt); err != nil {
-			return nil, fmt.Errorf("set event request retention: %w", err)
-		}
+	if err := s.syncEventRequestsTTL(ctx, event, update.Status); err != nil {
+		return nil, err
 	}
 
 	return event, nil
@@ -408,112 +290,16 @@ func (s *Service) RestartEvent(ctx context.Context, id string, clearQueue bool) 
 	if s.Events == nil {
 		return nil, ErrEventNotFound
 	}
-	event, err := s.Events.GetEvent(ctx, id)
+	event, err := s.loadEventForRestart(ctx, id)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, ErrEventNotFound
-		}
-		return nil, fmt.Errorf("load event for restart: %w", err)
-	}
-	if event == nil {
-		return nil, ErrEventNotFound
+		return nil, err
 	}
 	fencedCtx, err := s.prepareRestartHostingFence(ctx, event)
 	if err != nil {
 		return nil, err
 	}
 	if clearQueue {
-		if s.Requests == nil {
-			return nil, fmt.Errorf("atomic queue restart store and request reader are required")
-		}
-		const maxAttempts = 3
-		for conflicts := 0; !event.Restarting; conflicts++ {
-			if conflicts == maxAttempts {
-				return nil, fmt.Errorf("queue restart could not begin after conflicts: %w", store.ErrAdmissionConflict)
-			}
-			if err := s.Events.BeginQueueRestart(fencedCtx, event); err == nil {
-				break
-			} else {
-				var conflict *store.QueueVersionConflictError
-				if !errors.As(err, &conflict) {
-					return nil, err
-				}
-			}
-			event, err = s.Events.GetEvent(ctx, id)
-			if err != nil {
-				return nil, fmt.Errorf("reload event before restart: %w", err)
-			}
-			if event == nil {
-				return nil, ErrEventNotFound
-			}
-			fencedCtx, err = s.prepareRestartHostingFence(ctx, event)
-			if err != nil {
-				return nil, err
-			}
-		}
-		for conflicts := 0; conflicts < maxAttempts; {
-			current, err := s.Events.GetEvent(ctx, id)
-			if err != nil {
-				return nil, fmt.Errorf("reload restarting event: %w", err)
-			}
-			if !current.Restarting {
-				return nil, fmt.Errorf("queue restart state changed")
-			}
-			existing, err := s.Requests.ListRequestsByEvent(ctx, id)
-			if err != nil {
-				return nil, fmt.Errorf("list requests during restart: %w", err)
-			}
-			batch := make([]*models.SongRequest, 0, 49)
-			for _, req := range existing {
-				if req.Status == models.StatusPending || req.Status == models.StatusAccepted || req.Status == models.StatusUpNext || req.TTL != 0 {
-					batch = append(batch, req)
-					if len(batch) == 99 {
-						break
-					}
-				}
-			}
-			if len(batch) > 0 {
-				if err := s.Events.ArchiveRestartBatch(ctx, id, current.QueueVersion, batch); err != nil {
-					var conflict *store.QueueVersionConflictError
-					if errors.As(err, &conflict) {
-						conflicts++
-						continue
-					}
-					return nil, err
-				}
-				conflicts = 0 // successful progress resets the bounded conflict budget
-				continue
-			}
-			slots, err := s.Events.ListRestartSlots(ctx, id)
-			if err != nil {
-				return nil, err
-			}
-			if len(slots) > 0 {
-				if len(slots) > 99 {
-					slots = slots[:99]
-				}
-				if err := s.Events.DeleteRestartSlots(ctx, id, current.QueueVersion, slots); err != nil {
-					var conflict *store.QueueVersionConflictError
-					if errors.As(err, &conflict) {
-						conflicts++
-						continue
-					}
-					return nil, err
-				}
-				conflicts = 0
-				continue
-			}
-			if err := s.Events.FinishQueueRestart(fencedCtx, id, current.QueueVersion); err != nil {
-				var conflict *store.QueueVersionConflictError
-				if errors.As(err, &conflict) {
-					conflicts++
-					continue
-				}
-				return nil, err
-			}
-			return s.Events.GetEvent(ctx, id)
-		}
-		return nil, fmt.Errorf("queue restart exhausted conflict retries: %w", store.ErrAdmissionConflict)
+		return s.restartWithClearedQueue(ctx, fencedCtx, id, event)
 	}
 
 	event.Status = models.EventStatusActive

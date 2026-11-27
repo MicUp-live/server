@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/csv"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -42,98 +41,34 @@ func parseSunflyTwoColumnText(text, defaultProvider string) []CanonicalTrack {
 	}
 
 	var tracks []CanonicalTrack
-	lines := strings.Split(text, "\n")
-
 	// Track per-page rune-based right-half split boundary derived from the header row.
 	splitRuneCol := -1
 
-	addPair := func(rawArtist, rawTitle string) {
-		a := strings.TrimSpace(rawArtist)
-		t := strings.TrimSpace(rawTitle)
-		if a == "" || t == "" || isTruncatedCell(a) || isTruncatedCell(t) {
-			return
-		}
-		if sunflyFooterRe.MatchString(a) || sunflyFooterRe.MatchString(t) {
-			return
-		}
-		cleanArtist := UninvertArtist(a)
-		cleanTitle := StripNoiseTags(uninvertPDFTitle(t))
-		if cleanArtist == "" || cleanTitle == "" {
-			return
-		}
-		tracks = append(tracks, CanonicalTrack{
-			ID:     GenerateCanonicalID(cleanArtist, cleanTitle),
-			Artist: cleanArtist,
-			Title:  cleanTitle,
-			Source: provider,
-		})
-	}
-
-	for _, line := range lines {
+	for _, line := range strings.Split(text, "\n") {
 		line = strings.Trim(line, "\r\f")
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.Contains(strings.ToLower(trimmed), "sunfly karaoke") || sunflyFooterRe.MatchString(trimmed) {
+		if isSunflyIgnoredLine(trimmed) {
 			continue
 		}
-		if strings.Contains(line, "Made Famous By") && strings.Contains(line, "Song Title") {
-			// Compute rune-based midpoint between end of left "Song Title" and start of right "Made Famous By".
-			firstTitleByte := strings.Index(line, "Song Title")
-			secondArtistByte := strings.LastIndex(line, "Made Famous By")
-			if firstTitleByte > 0 && secondArtistByte > firstTitleByte {
-				leftTitleEndRune := len([]rune(line[:firstTitleByte+len("Song Title")]))
-				rightArtistRune := len([]rune(line[:secondArtistByte]))
-				if rightArtistRune > leftTitleEndRune {
-					splitRuneCol = (leftTitleEndRune + rightArtistRune) / 2
-				}
-			}
+		if isSunflyColumnHeader(line) {
+			splitRuneCol = computeSunflySplitCol(line, splitRuneCol)
 			continue
 		}
 
 		// Prefer 3+-space splitting when it yields an exact 4-column row.
 		parts := sunflyGapRe.Split(trimmed, -1)
 		if len(parts) == 4 {
-			addPair(parts[0], parts[1])
-			addPair(parts[2], parts[3])
+			tracks = appendSunflyTrack(tracks, parts[0], parts[1], provider)
+			tracks = appendSunflyTrack(tracks, parts[2], parts[3], provider)
 			continue
 		}
 		if len(parts) == 2 {
-			addPair(parts[0], parts[1])
+			tracks = appendSunflyTrack(tracks, parts[0], parts[1], provider)
 			continue
 		}
 
 		// Fallback for tightly packed 2-column rows: split at the widest whitespace gap near splitRuneCol.
-		if splitRuneCol > 0 {
-			runes := []rune(line)
-			if len(runes) <= splitRuneCol {
-				continue
-			}
-			// Find a space boundary near splitRuneCol (searching +/-12 runes) so we never slice inside a word.
-			cut := -1
-			for delta := 0; delta <= 12; delta++ {
-				if idx := splitRuneCol - delta; idx > 0 && idx < len(runes)-1 && runes[idx] == ' ' && runes[idx-1] == ' ' {
-					cut = idx
-					break
-				}
-				if idx := splitRuneCol + delta; idx > 0 && idx < len(runes)-1 && runes[idx] == ' ' && runes[idx-1] == ' ' {
-					cut = idx
-					break
-				}
-			}
-			if cut <= 0 {
-				continue
-			}
-			leftChunk := strings.TrimSpace(string(runes[:cut]))
-			rightChunk := strings.TrimSpace(string(runes[cut:]))
-			for _, chunk := range []string{leftChunk, rightChunk} {
-				if chunk == "" {
-					continue
-				}
-				cols := sunflyColRe.Split(chunk, 2)
-				if len(cols) == 2 {
-					addPair(cols[0], cols[1])
-				}
-			}
-		}
+		tracks = append(tracks, parseSunflyFallbackLine(line, provider, splitRuneCol)...)
 	}
 
 	return tracks
@@ -167,30 +102,9 @@ func ParseMrEntertainerXLSX(rawBytes []byte, provider string) (map[string]Canoni
 		return nil, nil, fmt.Errorf("open xlsx zip: %w", err)
 	}
 
-	var sharedStrings []string
-	var sheetBytes []byte
-
-	for _, f := range zr.File {
-		switch f.Name {
-		case "xl/sharedStrings.xml":
-			data, err := readBoundedZipFile(f, maxXLSXEntryBytes)
-			if err != nil {
-				return nil, nil, fmt.Errorf("read sharedStrings: %w", err)
-			}
-			sharedStrings, err = parseXLSXSharedStrings(data)
-			if err != nil {
-				return nil, nil, fmt.Errorf("parse sharedStrings: %w", err)
-			}
-		case "xl/worksheets/sheet1.xml":
-			sheetBytes, err = readBoundedZipFile(f, maxXLSXEntryBytes)
-			if err != nil {
-				return nil, nil, fmt.Errorf("read sheet1: %w", err)
-			}
-		}
-	}
-
-	if len(sheetBytes) == 0 {
-		return nil, nil, fmt.Errorf("xlsx missing xl/worksheets/sheet1.xml")
+	sharedStrings, sheetBytes, err := readXLSXEntries(zr)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	rows, err := parseXLSXSheetRows(sheetBytes, sharedStrings)
@@ -202,78 +116,22 @@ func ParseMrEntertainerXLSX(rawBytes []byte, provider string) (map[string]Canoni
 	}
 
 	// Scan up to the first 10 rows for the header row (handles optional leading banner rows).
-	headerRowIdx := -1
-	codeCol, titleCol, artistCol := -1, -1, -1
-	scanLimit := len(rows)
-	if scanLimit > 10 {
-		scanLimit = 10
-	}
-	for rIdx := 0; rIdx < scanLimit; rIdx++ {
-		cCol, tCol, aCol := -1, -1, -1
-		for i, h := range rows[rIdx] {
-			hl := strings.ToLower(strings.TrimSpace(h))
-			switch hl {
-			case "code", "disc", "disc_code", "discid", "catalog", "catalogue":
-				cCol = i
-			case "song title", "title", "song":
-				tCol = i
-			case "artist", "performer":
-				aCol = i
-			}
-		}
-		if tCol >= 0 && aCol >= 0 {
-			headerRowIdx = rIdx
-			codeCol, titleCol, artistCol = cCol, tCol, aCol
-			break
-		}
-	}
-	if headerRowIdx < 0 {
-		return nil, nil, fmt.Errorf("xlsx header missing required artist/title columns in first %d rows", scanLimit)
+	cols, err := findXLSXHeaderCols(rows)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	discMap := make(map[string]CanonicalTrack, len(rows))
 	tracks := make([]CanonicalTrack, 0, len(rows))
 
-	for _, row := range rows[headerRowIdx+1:] {
-		if artistCol >= len(row) || titleCol >= len(row) {
+	for _, row := range rows[cols.rowIdx+1:] {
+		track, ok := buildXLSXTrack(row, cols, provider)
+		if !ok {
 			continue
-		}
-		rawArtist := strings.TrimSpace(row[artistCol])
-		rawTitle := strings.TrimSpace(row[titleCol])
-		if rawArtist == "" || rawTitle == "" {
-			continue
-		}
-		cleanArtist := UninvertArtist(rawArtist)
-		cleanTitle := StripNoiseTags(uninvertPDFTitle(rawTitle))
-		if cleanArtist == "" || cleanTitle == "" {
-			continue
-		}
-
-		var normDisc string
-		if codeCol >= 0 && codeCol < len(row) {
-			if rawCode := strings.TrimSpace(row[codeCol]); rawCode != "" {
-				cand := NormalizeDiscCode(rawCode)
-				// Strict Provider Guard: only map valid disc codes that do not collide
-				// with another authoritative manufacturer's disc prefix.
-				if xlsxDiscCodeRe.MatchString(cand) {
-					claimedBy := ResolveProvider(cand, "")
-					if claimedBy == "" || strings.EqualFold(claimedBy, provider) {
-						normDisc = cand
-					}
-				}
-			}
-		}
-
-		track := CanonicalTrack{
-			ID:       GenerateCanonicalID(cleanArtist, cleanTitle),
-			Artist:   cleanArtist,
-			Title:    cleanTitle,
-			DiscCode: normDisc,
-			Source:   provider,
 		}
 		tracks = append(tracks, track)
-		if normDisc != "" {
-			discMap[normDisc] = track
+		if track.DiscCode != "" {
+			discMap[track.DiscCode] = track
 		}
 	}
 
@@ -334,21 +192,8 @@ func xlsxColIndex(ref string) int {
 }
 
 func parseXLSXSheetRows(data []byte, sharedStrings []string) ([][]string, error) {
-	type inlineStrNode struct {
-		T xlsxTextNode  `xml:"t"`
-		R []xlsxRunNode `xml:"r"`
-	}
-	type cellNode struct {
-		Ref string        `xml:"r,attr"`
-		T   string        `xml:"t,attr"`
-		V   string        `xml:"v"`
-		IS  inlineStrNode `xml:"is"`
-	}
-	type rowNode struct {
-		Cells []cellNode `xml:"c"`
-	}
 	type sheetDoc struct {
-		Rows []rowNode `xml:"sheetData>row"`
+		Rows []xlsxRowNode `xml:"sheetData>row"`
 	}
 	var doc sheetDoc
 	if err := xml.Unmarshal(data, &doc); err != nil {
@@ -359,41 +204,7 @@ func parseXLSXSheetRows(data []byte, sharedStrings []string) ([][]string, error)
 		if len(r.Cells) == 0 {
 			continue
 		}
-		var vals []string
-		for _, c := range r.Cells {
-			idx := xlsxColIndex(c.Ref)
-			if idx == -2 || idx > maxXLSXColIndex {
-				continue
-			}
-			if idx < 0 {
-				idx = len(vals)
-				if idx > maxXLSXColIndex {
-					continue
-				}
-			}
-			for len(vals) <= idx {
-				vals = append(vals, "")
-			}
-			switch c.T {
-			case "s":
-				if si, err := strconv.Atoi(strings.TrimSpace(c.V)); err == nil && si >= 0 && si < len(sharedStrings) {
-					vals[idx] = sharedStrings[si]
-				}
-			case "inlineStr":
-				if len(c.IS.R) > 0 {
-					var b strings.Builder
-					for _, run := range c.IS.R {
-						b.WriteString(run.T.Text)
-					}
-					vals[idx] = b.String()
-				} else {
-					vals[idx] = c.IS.T.Text
-				}
-			default:
-				vals[idx] = c.V
-			}
-		}
-		out = append(out, vals)
+		out = append(out, parseXLSXRow(r.Cells, sharedStrings))
 	}
 	return out, nil
 }
@@ -422,20 +233,9 @@ func ParseBillboardCSV(r io.Reader, defaultGenre, sourceName string) ([]Canonica
 		return nil, fmt.Errorf("read billboard csv header: %w", err)
 	}
 
-	artistCol, titleCol, dateCol := -1, -1, -1
-	for i, h := range header {
-		hl := strings.ToLower(strings.TrimSpace(h))
-		switch hl {
-		case "performer", "artist":
-			artistCol = i
-		case "title", "song":
-			titleCol = i
-		case "chart_week", "chart_date", "date":
-			dateCol = i
-		}
-	}
-	if artistCol < 0 || titleCol < 0 {
-		return nil, fmt.Errorf("billboard csv missing artist/title columns: %v", header)
+	artistCol, titleCol, dateCol, err := findBillboardHeaderCols(header)
+	if err != nil {
+		return nil, err
 	}
 
 	if strings.TrimSpace(sourceName) == "" {
@@ -444,66 +244,21 @@ func ParseBillboardCSV(r io.Reader, defaultGenre, sourceName string) ([]Canonica
 
 	unique := make(map[string]CanonicalTrack, 32000)
 	for {
-		rec, err := cr.Read()
+		rec, err := readBillboardCSVRecord(cr)
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
-			var parseErr *csv.ParseError
-			if errors.As(err, &parseErr) {
-				continue
-			}
 			return nil, fmt.Errorf("read billboard csv row: %w", err)
 		}
-		if artistCol >= len(rec) || titleCol >= len(rec) {
+		artist, title, year, ok := parseBillboardRecord(rec, artistCol, titleCol, dateCol)
+		if !ok {
 			continue
 		}
-		// Billboard artist & title names are already in natural (uninverted) order;
-		// do NOT call UninvertArtist (which would corrupt "Tyler, The Creator").
-		cleanArtist := strings.TrimSpace(rec[artistCol])
-		cleanTitle := StripNoiseTags(strings.TrimSpace(rec[titleCol]))
-		if cleanArtist == "" || cleanTitle == "" {
-			continue
-		}
-
-		year := 0
-		if dateCol >= 0 && dateCol < len(rec) {
-			if m := year4DigitRe.FindString(rec[dateCol]); m != "" {
-				if y, convErr := strconv.Atoi(m); convErr == nil {
-					year = y
-				}
-			}
-		}
-
-		key := CompositeKey(cleanArtist, cleanTitle)
-		if existing, ok := unique[key]; ok {
-			if year > 0 && (existing.Year == 0 || year < existing.Year) {
-				existing.Year = year
-				unique[key] = existing
-			}
-			continue
-		}
-		unique[key] = CanonicalTrack{
-			ID:     GenerateCanonicalID(cleanArtist, cleanTitle),
-			Artist: cleanArtist,
-			Title:  cleanTitle,
-			Genre:  defaultGenre,
-			Year:   year,
-			Source: sourceName,
-		}
+		mergeBillboardTrack(unique, artist, title, defaultGenre, sourceName, year)
 	}
 
-	keys := make([]string, 0, len(unique))
-	for k := range unique {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	tracks := make([]CanonicalTrack, 0, len(keys))
-	for _, k := range keys {
-		tracks = append(tracks, unique[k])
-	}
-	return tracks, nil
+	return sortedTracksFromMap(unique), nil
 }
 
 // WriteTracksCSV writes a deterministic sorted CSV of (artist, title, genre, year, source)

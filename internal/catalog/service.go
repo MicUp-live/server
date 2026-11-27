@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"regexp"
-	"sort"
 	"strings"
 	"time"
 
@@ -157,79 +156,15 @@ func (s *Service) ListSongs(ctx context.Context, songbookID, query string, offse
 	if offset < 0 {
 		offset = 0
 	}
-	var songs []*models.Song
-
-	if s.CatalogReader != nil && s.Catalogs != nil && s.Songbooks != nil {
-		book, bookErr := s.Songbooks.GetSongbook(ctx, songbookID)
-		if bookErr != nil && !errors.Is(bookErr, os.ErrNotExist) {
-			return nil, bookErr
-		}
-		if bookErr == nil && book.CatalogVersionID != "" {
-			version, versionErr := s.Catalogs.GetCatalogVersion(ctx, book.CatalogVersionID)
-			if versionErr != nil && !errors.Is(versionErr, os.ErrNotExist) {
-				return nil, versionErr
-			}
-			if versionErr == nil && version.Status == models.CatalogVersionReady {
-				catalogSongs, readErr := s.CatalogReader.ListSongs(ctx, version.AssetPrefix, songbookID)
-				if readErr != nil {
-					return nil, readErr
-				}
-				songs = catalogSongs
-				if query != "" {
-					needle := strings.ToLower(query)
-					filtered := songs[:0]
-					for _, song := range songs {
-						if strings.Contains(strings.ToLower(models.BuildSearchText(song.Artist, song.Title, song.Disc, song.Label, song.Source)), needle) {
-							filtered = append(filtered, song)
-						}
-					}
-					songs = filtered
-				}
-			}
-		}
+	songs, err := s.loadStaticSongsForList(ctx, songbookID, query)
+	if err != nil {
+		return nil, err
 	}
-
-	if s.CatalogChanges != nil {
-		changes, changeErr := s.CatalogChanges.ListCatalogChanges(ctx, songbookID)
-		if changeErr != nil {
-			return nil, changeErr
-		}
-		byID := models.ApplyCatalogChanges(songs, changes)
-		songs = songs[:0]
-		needle := strings.ToLower(query)
-		for _, song := range byID {
-			if needle != "" && !strings.Contains(strings.ToLower(models.BuildSearchText(song.Artist, song.Title, song.Disc, song.Label, song.Source)), needle) {
-				continue
-			}
-			songs = append(songs, song)
-		}
-		sort.SliceStable(songs, func(i, j int) bool {
-			left := strings.ToLower(songs[i].Artist + "\x00" + songs[i].Title)
-			right := strings.ToLower(songs[j].Artist + "\x00" + songs[j].Title)
-			return left < right
-		})
+	songs, err = s.applyAndFilterCatalogChanges(ctx, songbookID, query, songs)
+	if err != nil {
+		return nil, err
 	}
-
-	for _, sng := range songs {
-		sng.Data = nil
-		sng.SearchText = ""
-		sng.Fingerprint = ""
-		sng.Location = ""
-		sng.SongbookID = ""
-		sng.CreatedAt = time.Time{}
-		sng.UpdatedAt = time.Time{}
-	}
-
-	if offset >= len(songs) {
-		songs = nil
-	} else {
-		end := offset + pageSize
-		if end > len(songs) {
-			end = len(songs)
-		}
-		songs = songs[offset:end]
-	}
-	return songs, nil
+	return sanitizeAndPaginateSongs(songs, offset, pageSize), nil
 }
 
 // UpdateSong updates a song override within a songbook.
@@ -333,23 +268,8 @@ func (s *Service) resolvePublicSongbook(ctx context.Context, identifier, eventRe
 	}
 
 	// 2. If a valid eventRef was provided (join code or event ID), check if it grants temporary public access.
-	if eventRef != "" && s.Events != nil {
-		code := strings.ToUpper(strings.TrimSpace(eventRef))
-		ev, evErr := s.Events.GetEventByJoinCode(ctx, code)
-		if evErr != nil || ev == nil {
-			ev, evErr = s.Events.GetEvent(ctx, strings.TrimSpace(eventRef))
-		}
-		if evErr == nil && ev != nil && (ev.Status == models.EventStatusActive || ev.Status == models.EventStatusPaused) {
-			// Event is active or paused (live show session)
-			linkedBook, bookErr := s.Songbooks.GetSongbook(ctx, ev.SongbookID)
-			if bookErr == nil && linkedBook != nil {
-				normID := models.NormalizeSlug(identifier)
-				normSlug := models.NormalizeSlug(linkedBook.Slug)
-				if identifier == linkedBook.ID || identifier == linkedBook.PublicID || (normSlug != "" && normID == normSlug) {
-					return linkedBook, nil
-				}
-			}
-		}
+	if linkedBook := s.resolveSongbookViaEvent(ctx, identifier, eventRef); linkedBook != nil {
+		return linkedBook, nil
 	}
 
 	return nil, ErrSongbookNotFound
@@ -564,66 +484,17 @@ func (s *Service) CompleteImportUpload(ctx context.Context, songbookID, jobID st
 		return nil, ErrImportJobClosed
 	}
 
-	if !job.DispatchReady {
-		if err := s.ImportJobs.MarkImportJobDispatchReady(ctx, jobID); err != nil {
-			if errors.Is(err, store.ErrImportJobAlreadyDispatched) || errors.Is(err, store.ErrImportJobAlreadyCompleted) {
-				latest, getErr := s.ImportJobs.GetImportJob(ctx, jobID)
-				if getErr != nil {
-					return nil, fmt.Errorf("reload import job after dispatch ready race: %w", getErr)
-				}
-				return latest, nil
-			}
-			if errors.Is(err, store.ErrImportJobTerminal) {
-				return nil, ErrImportJobClosed
-			}
-			return nil, fmt.Errorf("mark import job dispatch ready: %w", err)
-		}
-		job.DispatchReady = true
-		job.Status = models.ImportJobQueued
+	job, done, err := s.ensureImportJobDispatchReady(ctx, job)
+	if err != nil || done {
+		return job, err
 	}
 
-	claimedJob, claimToken, claimErr := s.ImportJobs.ClaimImportJobDispatch(ctx, jobID, DefaultDispatchLeaseDuration)
-	if claimErr != nil {
-		if errors.Is(claimErr, store.ErrImportJobAlreadyDispatched) || errors.Is(claimErr, store.ErrImportJobAlreadyCompleted) || errors.Is(claimErr, store.ErrImportJobClaimConflict) {
-			latest, getErr := s.ImportJobs.GetImportJob(ctx, jobID)
-			if getErr != nil {
-				return nil, fmt.Errorf("reload import job after dispatch claim race: %w", getErr)
-			}
-			return latest, nil
-		}
-		if errors.Is(claimErr, store.ErrImportJobTerminal) {
-			return nil, ErrImportJobClosed
-		}
-		return nil, fmt.Errorf("claim import job dispatch: %w", claimErr)
-	}
-	if claimedJob != nil {
-		job = claimedJob
+	job, claimToken, done, err := s.claimImportJobForDispatch(ctx, job)
+	if err != nil || done {
+		return job, err
 	}
 
-	if err := s.ImportQueue.Enqueue(ctx, importjob.Job{
-		ID:           job.ID,
-		ManifestKey:  job.ManifestKey,
-		PruneMissing: job.PruneMissing,
-		Generation:   job.Generation,
-	}); err != nil {
-		_ = s.ImportJobs.RecordDispatchError(ctx, job.ID, claimToken, err.Error())
-		return nil, fmt.Errorf("schedule import job: %w", err)
-	}
-
-	if err := s.ImportJobs.ConfirmImportJobDispatch(ctx, job.ID, claimToken); err == nil {
-		confNow := time.Now().UTC()
-		job.DispatchedAt = &confNow
-		job.Status = models.ImportJobQueued
-		job.DispatchClaimToken = ""
-		job.DispatchClaimExpiresAt = nil
-	} else {
-		latest, getErr := s.ImportJobs.GetImportJob(ctx, job.ID)
-		if getErr != nil {
-			return nil, fmt.Errorf("reload import job after dispatch confirm race: %w", getErr)
-		}
-		job = latest
-	}
-	return job, nil
+	return s.enqueueAndConfirmImportJob(ctx, job, claimToken)
 }
 
 // ReconcileUndispatchedJobs discovers dispatch-ready unconfirmed import jobs with no claim or an expired claim,
@@ -711,75 +582,8 @@ func (s *Service) ResetImportJobDispatch(ctx context.Context, jobID string) erro
 // ParseFiles parses filename patterns into structured metadata items.
 func ParseFiles(req ParseFilesReq) []ParseFilesResItem {
 	results := make([]ParseFilesResItem, 0, len(req.Files))
-
 	for _, f := range req.Files {
-		nameWithoutExt := f.Name
-		if idx := strings.LastIndex(nameWithoutExt, "."); idx != -1 {
-			nameWithoutExt = nameWithoutExt[:idx]
-		}
-
-		var artist, title, disc string
-		if req.Pattern != "disc-artist-title" {
-			disc, nameWithoutExt = extractDiscCodeFromRawStem(nameWithoutExt)
-		}
-
-		partsRaw := importRegex.Split(nameWithoutExt, -1)
-		if len(partsRaw) == 1 {
-			partsRaw = strings.Split(nameWithoutExt, "_")
-		}
-		parts := make([]string, len(partsRaw))
-		for i, p := range partsRaw {
-			parts[i] = strings.TrimSpace(strings.ReplaceAll(p, "_", " "))
-		}
-
-		switch req.Pattern {
-		case "artist-title":
-			if len(parts) > 0 {
-				artist = parts[0]
-			}
-			if len(parts) > 1 {
-				title = strings.Join(parts[1:], " - ")
-			}
-		case "title-artist":
-			if len(parts) > 1 {
-				title = strings.Join(parts[:len(parts)-1], " - ")
-				artist = parts[len(parts)-1]
-			} else if len(parts) == 1 {
-				title = parts[0]
-			}
-		case "disc-artist-title":
-			if len(parts) > 0 {
-				disc = parts[0]
-			}
-			if len(parts) > 1 {
-				artist = parts[1]
-			}
-			if len(parts) > 2 {
-				title = strings.Join(parts[2:], " - ")
-			}
-		}
-
-		title = cleanupRegex.ReplaceAllString(title, "")
-		title = strings.Join(strings.Fields(title), " ")
-
-		confidence := "low"
-		if artist != "" && title != "" {
-			confidence = "high"
-		}
-
-		loc := f.Path
-		if loc == "" {
-			loc = f.Name
-		}
-
-		results = append(results, ParseFilesResItem{
-			Artist:      artist,
-			Title:       title,
-			Disc:        disc,
-			Location:    loc,
-			Fingerprint: fmt.Sprintf("%s-%d", f.Name, f.Size),
-			Confidence:  confidence,
-		})
+		results = append(results, parseSingleFile(f, req.Pattern))
 	}
 	return results
 }

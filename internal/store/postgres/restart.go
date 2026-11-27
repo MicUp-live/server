@@ -112,6 +112,25 @@ func (s *Store) BeginQueueRestart(ctx context.Context, event *models.Event) erro
 // ArchiveRestartBatch transitions a batch of requests to archived/completed state
 // and advances queue_version atomically while the restart barrier is held.
 func (s *Store) ArchiveRestartBatch(ctx context.Context, eventID string, expectedVersion int64, requests []*models.SongRequest) error {
+	if err := validateArchiveRestartRequests(eventID, requests); err != nil {
+		return err
+	}
+
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		now := s.currentTime()
+		if err := bumpRestartVersionTx(ctx, tx, eventID, expectedVersion, now); err != nil {
+			return err
+		}
+		for _, req := range requests {
+			if err := archiveRestartRequestTx(ctx, tx, eventID, req, now); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func validateArchiveRestartRequests(eventID string, requests []*models.SongRequest) error {
 	if eventID == "" || len(requests) == 0 {
 		return fmt.Errorf("archive restart batch: %w", os.ErrInvalid)
 	}
@@ -122,58 +141,59 @@ func (s *Store) ArchiveRestartBatch(ctx context.Context, eventID string, expecte
 		}
 		seen[req.ID] = true
 	}
+	return nil
+}
 
-	return s.withTx(ctx, func(tx pgx.Tx) error {
-		now := s.currentTime()
-		if err := bumpRestartVersionTx(ctx, tx, eventID, expectedVersion, now); err != nil {
-			return err
+func resolveArchiveRestartRequest(req *models.SongRequest, now time.Time) (models.RequestStatus, *time.Time) {
+	switch req.Status {
+	case models.StatusPending, models.StatusAccepted, models.StatusUpNext:
+		return models.StatusCompleted, &now
+	case models.StatusCompleted:
+		if req.CompletedAt != nil && !req.CompletedAt.IsZero() {
+			return req.Status, nil
 		}
-		for _, req := range requests {
-			oldStatus := req.Status
-			newStatus := req.Status
-			var completedFallback *time.Time
-			if newStatus == models.StatusPending || newStatus == models.StatusAccepted || newStatus == models.StatusUpNext {
-				newStatus = models.StatusCompleted
-				completedFallback = &now
-			} else if newStatus == models.StatusCompleted && (req.CompletedAt == nil || req.CompletedAt.IsZero()) {
-				fallback := req.UpdatedAt
-				if fallback.IsZero() {
-					fallback = req.CreatedAt
-				}
-				if !fallback.IsZero() {
-					u := fallback.UTC()
-					completedFallback = &u
-				}
-			}
+		fallback := req.UpdatedAt
+		if fallback.IsZero() {
+			fallback = req.CreatedAt
+		}
+		if fallback.IsZero() {
+			return req.Status, nil
+		}
+		u := fallback.UTC()
+		return req.Status, &u
+	default:
+		return req.Status, nil
+	}
+}
 
-			var (
-				rowsAffected int64
-				err          error
-			)
-			if completedFallback != nil {
-				tag, execErr := tx.Exec(ctx, `
-					UPDATE event_requests
-					SET status = $1, updated_at = $2, completed_at = COALESCE(completed_at, $3), expires_at = NULL
-					WHERE id = $4 AND event_id = $5 AND status = $6`,
-					string(newStatus), now, *completedFallback, req.ID, eventID, string(oldStatus))
-				rowsAffected, err = tag.RowsAffected(), execErr
-			} else {
-				tag, execErr := tx.Exec(ctx, `
-					UPDATE event_requests
-					SET status = $1, updated_at = $2, expires_at = NULL
-					WHERE id = $3 AND event_id = $4 AND status = $5`,
-					string(newStatus), now, req.ID, eventID, string(oldStatus))
-				rowsAffected, err = tag.RowsAffected(), execErr
-			}
-			if err != nil {
-				return fmt.Errorf("queue restart write: %w", err)
-			}
-			if rowsAffected == 0 {
-				return fmt.Errorf("queue restart write: request %s status conflict or missing: %w", req.ID, store.ErrAdmissionConflict)
-			}
-		}
-		return nil
-	})
+func archiveRestartRequestTx(ctx context.Context, tx pgx.Tx, eventID string, req *models.SongRequest, now time.Time) error {
+	newStatus, completedFallback := resolveArchiveRestartRequest(req, now)
+	var (
+		rowsAffected int64
+		err          error
+	)
+	if completedFallback != nil {
+		tag, execErr := tx.Exec(ctx, `
+			UPDATE event_requests
+			SET status = $1, updated_at = $2, completed_at = COALESCE(completed_at, $3), expires_at = NULL
+			WHERE id = $4 AND event_id = $5 AND status = $6`,
+			string(newStatus), now, *completedFallback, req.ID, eventID, string(req.Status))
+		rowsAffected, err = tag.RowsAffected(), execErr
+	} else {
+		tag, execErr := tx.Exec(ctx, `
+			UPDATE event_requests
+			SET status = $1, updated_at = $2, expires_at = NULL
+			WHERE id = $3 AND event_id = $4 AND status = $5`,
+			string(newStatus), now, req.ID, eventID, string(req.Status))
+		rowsAffected, err = tag.RowsAffected(), execErr
+	}
+	if err != nil {
+		return fmt.Errorf("queue restart write: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("queue restart write: request %s status conflict or missing: %w", req.ID, store.ErrAdmissionConflict)
+	}
+	return nil
 }
 
 // ListRestartSlots returns nil because PostgreSQL stores no separate singer-slot items.
@@ -228,100 +248,107 @@ func (s *Store) DetachEventFromSongbook(ctx context.Context, eventID, songbookID
 	trimmedName := strings.TrimSpace(songbookName)
 	const maxAttempts = 5
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		var result *models.Event
-		var conflict bool
-
-		err := s.withTx(ctx, func(tx pgx.Tx) error {
-			conflict = false
-			result = nil
-			row := tx.QueryRow(ctx, `SELECT `+eventSelectColumns+` FROM events WHERE id = $1`, eventID)
-			ev, err := scanEvent(row)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					return nil
-				}
-				return err
-			}
-			if ev.SongbookID != songbookID {
-				result = ev
-				return nil
-			}
-
-			now := s.currentTime()
-			endedAt := ev.EndedAt
-			if endedAt == nil {
-				t := now
-				endedAt = &t
-			}
-			ttl := ev.PendingDetachTTL
-			if ttl == 0 {
-				ttl = ev.TTL
-			}
-			if ttl == 0 {
-				ttl = endedAt.Add(retention).Unix()
-			}
-			expiresAt := time.Unix(ttl, 0).UTC()
-
-			tag, err := tx.Exec(ctx, `
-				UPDATE events
-				SET status = $1,
-					songbook_id = NULL,
-					detached_songbook_name = $2,
-					ended_at = $3,
-					restarting = FALSE,
-					detaching = FALSE,
-					pending_detach_expires_at = NULL,
-					expires_at = $4,
-					updated_at = $5,
-					metadata_version = metadata_version + 1,
-					queue_version = queue_version + 1
-				WHERE id = $6
-					AND songbook_id = $7
-					AND queue_version = $8
-					AND metadata_version = $9`,
-				string(models.EventStatusEnded),
-				trimmedName,
-				*endedAt,
-				expiresAt,
-				now,
-				ev.ID,
-				songbookID,
-				ev.QueueVersion,
-				ev.MetadataVersion,
-			)
-			if err != nil {
-				return fmt.Errorf("detach event %s from songbook %s: %w", eventID, songbookID, err)
-			}
-			if tag.RowsAffected() == 0 {
-				conflict = true
-				return nil
-			}
-
-			if _, err := tx.Exec(ctx, `UPDATE event_requests SET expires_at = $1 WHERE event_id = $2`, expiresAt, ev.ID); err != nil {
-				return fmt.Errorf("set retention on detached event %s: %w", ev.ID, err)
-			}
-
-			ev.Status = models.EventStatusEnded
-			ev.SongbookID = ""
-			ev.DetachedSongbookName = trimmedName
-			ev.EndedAt = endedAt
-			ev.Restarting = false
-			ev.Detaching = false
-			ev.PendingDetachTTL = 0
-			ev.TTL = ttl
-			ev.UpdatedAt = now
-			ev.MetadataVersion++
-			ev.QueueVersion++
-			result = ev
-			return nil
-		})
+		result, conflict, err := s.detachEventOnce(ctx, eventID, songbookID, trimmedName, retention)
 		if err != nil {
 			return nil, err
 		}
-		if conflict {
-			continue
+		if !conflict {
+			return result, nil
 		}
-		return result, nil
 	}
 	return nil, fmt.Errorf("detach event %s from songbook %s: exceeded conflict retries", eventID, songbookID)
+}
+
+func resolveDetachRetention(ev *models.Event, now time.Time, retention time.Duration) (time.Time, int64, time.Time) {
+	endedAt := now
+	if ev.EndedAt != nil {
+		endedAt = *ev.EndedAt
+	}
+	ttl := ev.PendingDetachTTL
+	if ttl == 0 {
+		ttl = ev.TTL
+	}
+	if ttl == 0 {
+		ttl = endedAt.Add(retention).Unix()
+	}
+	return endedAt, ttl, time.Unix(ttl, 0).UTC()
+}
+
+func (s *Store) detachEventOnce(ctx context.Context, eventID, songbookID, trimmedName string, retention time.Duration) (*models.Event, bool, error) {
+	var result *models.Event
+	var conflict bool
+
+	err := s.withTx(ctx, func(tx pgx.Tx) error {
+		conflict = false
+		result = nil
+		row := tx.QueryRow(ctx, `SELECT `+eventSelectColumns+` FROM events WHERE id = $1`, eventID)
+		ev, err := scanEvent(row)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if ev.SongbookID != songbookID {
+			result = ev
+			return nil
+		}
+
+		now := s.currentTime()
+		endedAt, ttl, expiresAt := resolveDetachRetention(ev, now, retention)
+
+		tag, err := tx.Exec(ctx, `
+			UPDATE events
+			SET status = $1,
+				songbook_id = NULL,
+				detached_songbook_name = $2,
+				ended_at = $3,
+				restarting = FALSE,
+				detaching = FALSE,
+				pending_detach_expires_at = NULL,
+				expires_at = $4,
+				updated_at = $5,
+				metadata_version = metadata_version + 1,
+				queue_version = queue_version + 1
+			WHERE id = $6
+				AND songbook_id = $7
+				AND queue_version = $8
+				AND metadata_version = $9`,
+			string(models.EventStatusEnded),
+			trimmedName,
+			endedAt,
+			expiresAt,
+			now,
+			ev.ID,
+			songbookID,
+			ev.QueueVersion,
+			ev.MetadataVersion,
+		)
+		if err != nil {
+			return fmt.Errorf("detach event %s from songbook %s: %w", eventID, songbookID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			conflict = true
+			return nil
+		}
+
+		if _, err := tx.Exec(ctx, `UPDATE event_requests SET expires_at = $1 WHERE event_id = $2`, expiresAt, ev.ID); err != nil {
+			return fmt.Errorf("set retention on detached event %s: %w", ev.ID, err)
+		}
+
+		ev.Status = models.EventStatusEnded
+		ev.SongbookID = ""
+		ev.DetachedSongbookName = trimmedName
+		ev.EndedAt = &endedAt
+		ev.Restarting = false
+		ev.Detaching = false
+		ev.PendingDetachTTL = 0
+		ev.TTL = ttl
+		ev.UpdatedAt = now
+		ev.MetadataVersion++
+		ev.QueueVersion++
+		result = ev
+		return nil
+	})
+	return result, conflict, err
 }

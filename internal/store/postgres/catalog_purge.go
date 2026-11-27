@@ -209,53 +209,93 @@ func (s *Store) PurgeOrphanCatalogPrefix(ctx context.Context, prefix string, pur
 		return fmt.Errorf("purge orphan catalog prefix: prefix is required")
 	}
 	catalogID := extractCatalogIDFromPrefix(prefix)
-	opt := store.PurgeCatalogOptions{LeaseDuration: DefaultBuildLeaseDuration}
-	if len(opts) > 0 && opts[0].LeaseDuration > 0 {
-		opt.LeaseDuration = opts[0].LeaseDuration
-	}
+	opt := resolvePurgeCatalogOptions(opts)
 
 	existing, err := s.GetCatalogVersion(ctx, catalogID)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("check catalog version for orphan prefix: %w", err)
 	}
-
 	if err == nil {
-		now := s.currentTime()
-		if existing.Status == models.CatalogVersionBuilding && existing.LeaseExpiresAt.After(now) {
-			return store.ErrCatalogDeletionConflict
-		}
-		existingPrefix := strings.Trim(existing.AssetPrefix, "/")
-		targetPrefix := strings.Trim(prefix, "/")
-		isExact := existingPrefix != "" && existingPrefix == targetPrefix
-		isDescendant := existingPrefix != "" && strings.HasPrefix(targetPrefix, existingPrefix+"/")
-		isAncestor := targetPrefix != "" && strings.HasPrefix(existingPrefix, targetPrefix+"/")
-
-		if isExact {
-			return s.PurgeCatalogVersion(ctx, catalogID, purgeAssets, opt)
-		}
-
-		referenced, refErr := s.IsCatalogVersionReferenced(ctx, catalogID)
-		if refErr != nil {
-			return fmt.Errorf("verify references for orphan prefix: %w", refErr)
-		}
-		if referenced && (isExact || isDescendant || isAncestor) {
-			return store.ErrCatalogVersionInUse
-		}
-		if existing.Status == models.CatalogVersionReady && (isDescendant || isAncestor) {
-			return s.PurgeCatalogVersion(ctx, catalogID, purgeAssets, opt)
-		}
-		if purgeAssets != nil {
-			if err := purgeAssets(prefix); err != nil {
-				return fmt.Errorf("purge orphan assets: %w", err)
-			}
-		}
-		return nil
+		return s.purgeExistingCatalogPrefix(ctx, catalogID, prefix, existing, purgeAssets, opt)
 	}
 
 	token := uuid.NewString()
+	if err := s.reserveOrphanCatalogPrefix(ctx, catalogID, prefix, token, opt.LeaseDuration); err != nil {
+		return err
+	}
+
+	referenced, refErr := s.IsCatalogVersionReferenced(ctx, catalogID)
+	if refErr != nil || referenced {
+		_ = s.DeleteCatalogVersion(ctx, catalogID, token)
+		if referenced {
+			return store.ErrCatalogVersionInUse
+		}
+		return fmt.Errorf("verify references for orphan prefix: %w", refErr)
+	}
+
+	if err := callPurgeAssets(purgeAssets, prefix); err != nil {
+		return err
+	}
+
+	if err := s.DeleteCatalogVersion(ctx, catalogID, token); err != nil {
+		return fmt.Errorf("delete orphan reservation: %w", err)
+	}
+	return nil
+}
+
+func resolvePurgeCatalogOptions(opts []store.PurgeCatalogOptions) store.PurgeCatalogOptions {
+	opt := store.PurgeCatalogOptions{LeaseDuration: DefaultBuildLeaseDuration}
+	if len(opts) > 0 && opts[0].LeaseDuration > 0 {
+		opt.LeaseDuration = opts[0].LeaseDuration
+	}
+	return opt
+}
+
+func (s *Store) purgeExistingCatalogPrefix(
+	ctx context.Context,
+	catalogID string,
+	prefix string,
+	existing *models.CatalogVersion,
+	purgeAssets func(assetPrefix string) error,
+	opt store.PurgeCatalogOptions,
+) error {
 	now := s.currentTime()
-	leaseExpires := now.Add(opt.LeaseDuration)
-	err = s.withTx(ctx, func(tx pgx.Tx) error {
+	if existing.Status == models.CatalogVersionBuilding && existing.LeaseExpiresAt.After(now) {
+		return store.ErrCatalogDeletionConflict
+	}
+	existingPrefix := strings.Trim(existing.AssetPrefix, "/")
+	targetPrefix := strings.Trim(prefix, "/")
+	isExact := existingPrefix != "" && existingPrefix == targetPrefix
+	isDescendant := existingPrefix != "" && strings.HasPrefix(targetPrefix, existingPrefix+"/")
+	isAncestor := targetPrefix != "" && strings.HasPrefix(existingPrefix, targetPrefix+"/")
+
+	if isExact {
+		return s.PurgeCatalogVersion(ctx, catalogID, purgeAssets, opt)
+	}
+
+	referenced, refErr := s.IsCatalogVersionReferenced(ctx, catalogID)
+	if refErr != nil {
+		return fmt.Errorf("verify references for orphan prefix: %w", refErr)
+	}
+	if referenced && (isExact || isDescendant || isAncestor) {
+		return store.ErrCatalogVersionInUse
+	}
+	if existing.Status == models.CatalogVersionReady && (isDescendant || isAncestor) {
+		return s.PurgeCatalogVersion(ctx, catalogID, purgeAssets, opt)
+	}
+	return callPurgeAssets(purgeAssets, prefix)
+}
+
+func (s *Store) reserveOrphanCatalogPrefix(
+	ctx context.Context,
+	catalogID string,
+	prefix string,
+	token string,
+	leaseDuration time.Duration,
+) error {
+	now := s.currentTime()
+	leaseExpires := now.Add(leaseDuration)
+	return s.withTx(ctx, func(tx pgx.Tx) error {
 		_, execErr := tx.Exec(ctx, `
 			INSERT INTO catalog_versions (
 				id, schema_version, status, song_count, asset_prefix,
@@ -271,27 +311,14 @@ func (s *Store) PurgeOrphanCatalogPrefix(ctx context.Context, prefix string, pur
 		}
 		return nil
 	})
-	if err != nil {
-		return err
-	}
+}
 
-	referenced, refErr := s.IsCatalogVersionReferenced(ctx, catalogID)
-	if refErr != nil || referenced {
-		_ = s.DeleteCatalogVersion(ctx, catalogID, token)
-		if referenced {
-			return store.ErrCatalogVersionInUse
-		}
-		return fmt.Errorf("verify references for orphan prefix: %w", refErr)
+func callPurgeAssets(purgeAssets func(assetPrefix string) error, prefix string) error {
+	if purgeAssets == nil {
+		return nil
 	}
-
-	if purgeAssets != nil {
-		if err := purgeAssets(prefix); err != nil {
-			return fmt.Errorf("purge orphan assets: %w", err)
-		}
-	}
-
-	if err := s.DeleteCatalogVersion(ctx, catalogID, token); err != nil {
-		return fmt.Errorf("delete orphan reservation: %w", err)
+	if err := purgeAssets(prefix); err != nil {
+		return fmt.Errorf("purge orphan assets: %w", err)
 	}
 	return nil
 }

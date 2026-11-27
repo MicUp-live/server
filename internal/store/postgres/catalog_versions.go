@@ -313,65 +313,70 @@ func (s *Store) PublishCatalogVersion(ctx context.Context, songbookID, catalogVe
 	if len(opts) > 0 {
 		opt = opts[0]
 	}
+
+	return s.withTx(ctx, func(tx pgx.Tx) error {
+		return s.publishCatalogVersionTx(ctx, tx, songbookID, catalogVersionID, opt)
+	})
+}
+
+func (s *Store) publishCatalogVersionTx(ctx context.Context, tx pgx.Tx, songbookID, catalogVersionID string, opt store.PublicationOptions) error {
+	if opt.JobID != "" {
+		if err := checkJobReceiptBeforePublish(ctx, tx, opt.JobID); err != nil {
+			return err
+		}
+	}
+
+	var (
+		verStatus string
+		songCount int
+	)
+	err := tx.QueryRow(ctx,
+		`SELECT status, song_count FROM catalog_versions WHERE id = $1 FOR UPDATE`,
+		catalogVersionID,
+	).Scan(&verStatus, &songCount)
+	if isNotFound(err) {
+		return os.ErrNotExist
+	}
+	if err != nil {
+		return fmt.Errorf("get catalog version: %w", err)
+	}
+	if verStatus != string(models.CatalogVersionReady) {
+		return fmt.Errorf("publish catalog version: catalog %s status is %s: %w", catalogVersionID, verStatus, os.ErrNotExist)
+	}
+
 	hasExpectedBase := opt.ExpectedBaseVersion != nil
 	expectedBase := ""
 	if hasExpectedBase {
 		expectedBase = *opt.ExpectedBaseVersion
 	}
 
-	return s.withTx(ctx, func(tx pgx.Tx) error {
-		if opt.JobID != "" {
-			if err := checkJobReceiptBeforePublish(ctx, tx, opt.JobID); err != nil {
-				return err
-			}
-		}
+	now := s.currentTime()
+	var updatedSBID string
+	err = tx.QueryRow(ctx, `
+		UPDATE songbooks
+		SET catalog_version_id = $1,
+		    song_count = $2,
+		    updated_at = $3,
+		    catalog_generation = CASE WHEN $4 > 0 THEN $4 ELSE catalog_generation END
+		WHERE id = $5
+		  AND deleting = FALSE
+		  AND ($4 = 0 OR catalog_generation <= $4)
+		  AND ($6 = FALSE OR COALESCE(catalog_version_id, '') = $7)
+		RETURNING id`,
+		catalogVersionID, songCount, now, opt.JobGeneration,
+		songbookID, hasExpectedBase, expectedBase,
+	).Scan(&updatedSBID)
+	if isNotFound(err) {
+		return classifySongbookPublishConflict(ctx, tx, songbookID, opt)
+	}
+	if err != nil {
+		return fmt.Errorf("publish catalog version: %w", err)
+	}
 
-		var (
-			verStatus string
-			songCount int
-		)
-		err := tx.QueryRow(ctx,
-			`SELECT status, song_count FROM catalog_versions WHERE id = $1 FOR UPDATE`,
-			catalogVersionID,
-		).Scan(&verStatus, &songCount)
-		if isNotFound(err) {
-			return os.ErrNotExist
-		}
-		if err != nil {
-			return fmt.Errorf("get catalog version: %w", err)
-		}
-		if verStatus != string(models.CatalogVersionReady) {
-			return fmt.Errorf("publish catalog version: catalog %s status is %s: %w", catalogVersionID, verStatus, os.ErrNotExist)
-		}
-
-		now := s.currentTime()
-		var updatedSBID string
-		err = tx.QueryRow(ctx, `
-			UPDATE songbooks
-			SET catalog_version_id = $1,
-			    song_count = $2,
-			    updated_at = $3,
-			    catalog_generation = CASE WHEN $4 > 0 THEN $4 ELSE catalog_generation END
-			WHERE id = $5
-			  AND deleting = FALSE
-			  AND ($4 = 0 OR catalog_generation <= $4)
-			  AND ($6 = FALSE OR COALESCE(catalog_version_id, '') = $7)
-			RETURNING id`,
-			catalogVersionID, songCount, now, opt.JobGeneration,
-			songbookID, hasExpectedBase, expectedBase,
-		).Scan(&updatedSBID)
-		if isNotFound(err) {
-			return classifySongbookPublishConflict(ctx, tx, songbookID, opt)
-		}
-		if err != nil {
-			return fmt.Errorf("publish catalog version: %w", err)
-		}
-
-		if opt.JobID != "" {
-			return completeImportJobOnPublish(ctx, tx, songbookID, catalogVersionID, now, opt)
-		}
-		return nil
-	})
+	if opt.JobID != "" {
+		return completeImportJobOnPublish(ctx, tx, songbookID, catalogVersionID, now, opt)
+	}
+	return nil
 }
 
 func checkJobReceiptBeforePublish(ctx context.Context, tx pgx.Tx, jobID string) error {

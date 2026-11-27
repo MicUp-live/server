@@ -176,54 +176,109 @@ func main() {
 	log.Printf("Success! Catalog version %s is ready (%d songs, prefix: %s)", version.ID, version.SongCount, version.AssetPrefix)
 }
 
+type manifestRef struct {
+	bucket     string
+	key        string
+	jobID      string
+	songbookID string
+}
+
 func buildFromManifestWithClient(ctx context.Context, runner *catalog.Runner, client s3ManifestAPI, bucket, songbookID, key string, jobPruneMissing bool, jobGeneration int64) error {
-	jobID := strings.TrimSuffix(strings.TrimPrefix(key, "imports/"), ".json")
-	var storedJob *models.ImportJob
-	if runner.Imports != nil {
-		job, getErr := runner.Imports.GetImportJob(ctx, jobID)
-		if getErr == nil && job != nil {
-			if job.Status == models.ImportJobCompleted {
-				log.Printf("catalog-worker: import %s already completed; skipping manifest build", jobID)
-				if _, delErr := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); delErr != nil {
-					return fmt.Errorf("delete completed source manifest: %w", delErr)
-				}
-				return nil
-			}
-			if job.Status == models.ImportJobFailed {
-				log.Printf("catalog-worker: import %s is terminal failed; skipping manifest build", jobID)
-				if _, delErr := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); delErr != nil {
-					return fmt.Errorf("delete failed source manifest: %w", delErr)
-				}
-				return nil
-			}
-			storedJob = job
-		} else if getErr != nil && !errors.Is(getErr, os.ErrNotExist) {
-			return fmt.Errorf("load import job %s: %w", jobID, getErr)
-		}
+	ref := manifestRef{
+		bucket:     bucket,
+		key:        key,
+		jobID:      strings.TrimSuffix(strings.TrimPrefix(key, "imports/"), ".json"),
+		songbookID: songbookID,
+	}
+	storedJob, done, err := checkExistingImportJob(ctx, runner, client, ref)
+	if err != nil || done {
+		return err
 	}
 
-	obj, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: &bucket, Key: &key})
+	manifest, done, err := fetchSourceManifest(ctx, runner, client, ref)
+	if err != nil || done {
+		return err
+	}
+
+	pruneMissing := jobPruneMissing
+	if manifest.PruneMissing != nil {
+		pruneMissing = *manifest.PruneMissing
+	}
+
+	gen, err := resolveCatalogGeneration(ctx, runner, storedJob, ref, jobGeneration)
+	if err != nil {
+		return err
+	}
+
+	pubOpts := store.PublicationOptions{
+		JobGeneration:  gen,
+		JobID:          ref.jobID,
+		ProcessedSongs: len(manifest.Songs),
+	}
+	if _, err := runner.BuildManifestCatalog(ctx, songbookID, manifest.Songs, pruneMissing, pubOpts); err != nil {
+		return handleManifestBuildError(ctx, runner, client, ref, err)
+	}
+	return deleteSourceManifest(ctx, client, ref, "delete source manifest")
+}
+
+func checkExistingImportJob(ctx context.Context, runner *catalog.Runner, client s3ManifestAPI, ref manifestRef) (*models.ImportJob, bool, error) {
+	if runner.Imports == nil {
+		return nil, false, nil
+	}
+	job, getErr := runner.Imports.GetImportJob(ctx, ref.jobID)
+	if getErr != nil {
+		if errors.Is(getErr, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("load import job %s: %w", ref.jobID, getErr)
+	}
+	if job == nil {
+		return nil, false, nil
+	}
+	if job.Status == models.ImportJobCompleted {
+		log.Printf("catalog-worker: import %s already completed; skipping manifest build", ref.jobID)
+		return nil, true, deleteSourceManifest(ctx, client, ref, "delete completed source manifest")
+	}
+	if job.Status == models.ImportJobFailed {
+		log.Printf("catalog-worker: import %s is terminal failed; skipping manifest build", ref.jobID)
+		return nil, true, deleteSourceManifest(ctx, client, ref, "delete failed source manifest")
+	}
+	return job, false, nil
+}
+
+func fetchSourceManifest(ctx context.Context, runner *catalog.Runner, client s3ManifestAPI, ref manifestRef) (*sourceManifest, bool, error) {
+	obj, err := client.GetObject(ctx, &s3.GetObjectInput{Bucket: &ref.bucket, Key: &ref.key})
 	if err != nil {
 		// If S3 returns an error (e.g. manifest deleted because job completed previously or concurrently),
 		// reload receipt to check if the job was completed or terminal.
-		if runner.Imports != nil {
-			latest, getErr := runner.Imports.GetImportJob(ctx, jobID)
-			if getErr == nil && latest != nil && (latest.Status == models.ImportJobCompleted || latest.Status == models.ImportJobFailed) {
-				return nil
-			}
+		if isTerminalImportJob(ctx, runner, ref.jobID) {
+			return nil, true, nil
 		}
-		return fmt.Errorf("read source manifest: %w", err)
+		return nil, false, fmt.Errorf("read source manifest: %w", err)
 	}
 	body, readErr := io.ReadAll(obj.Body)
 	obj.Body.Close()
 	if readErr != nil {
-		return fmt.Errorf("read source manifest: %w", readErr)
+		return nil, false, fmt.Errorf("read source manifest: %w", readErr)
 	}
 	var manifest sourceManifest
 	if err := json.Unmarshal(body, &manifest); err != nil {
-		return fmt.Errorf("decode source manifest: %w", err)
+		return nil, false, fmt.Errorf("decode source manifest: %w", err)
 	}
-	for i, song := range manifest.Songs {
+	normalizeManifestSongs(manifest.Songs, ref.songbookID)
+	return &manifest, false, nil
+}
+
+func isTerminalImportJob(ctx context.Context, runner *catalog.Runner, jobID string) bool {
+	if runner.Imports == nil {
+		return false
+	}
+	latest, err := runner.Imports.GetImportJob(ctx, jobID)
+	return err == nil && latest != nil && (latest.Status == models.ImportJobCompleted || latest.Status == models.ImportJobFailed)
+}
+
+func normalizeManifestSongs(songs []*models.Song, songbookID string) {
+	for i, song := range songs {
 		if song == nil {
 			continue
 		}
@@ -233,73 +288,60 @@ func buildFromManifestWithClient(ctx context.Context, runner *catalog.Runner, cl
 			song.ID = "import-" + hex.EncodeToString(sum[:])[:24]
 		}
 	}
-	pruneMissing := jobPruneMissing
-	if manifest.PruneMissing != nil {
-		pruneMissing = *manifest.PruneMissing
-	}
+}
 
+func resolveCatalogGeneration(ctx context.Context, runner *catalog.Runner, storedJob *models.ImportJob, ref manifestRef, jobGeneration int64) (int64, error) {
 	gen := jobGeneration
 	if gen == 0 && storedJob != nil {
 		gen = storedJob.Generation
 	}
-	if gen == 0 {
-		// Legacy job queued before generation tracking was introduced.
-		// Allocate a sequential generation from Songbooks and persist it durably.
-		if runner.Books != nil && runner.Imports != nil {
-			allocatedGen, allocErr := runner.Books.NextCatalogGeneration(ctx, songbookID)
-			if allocErr != nil {
-				return fmt.Errorf("allocate legacy catalog generation: %w", allocErr)
-			}
-			assignedGen, assignErr := runner.Imports.AssignImportJobGeneration(ctx, jobID, allocatedGen)
-			if assignErr != nil {
-				return fmt.Errorf("persist legacy catalog generation: %w", assignErr)
-			}
-			gen = assignedGen
-			if storedJob != nil {
-				storedJob.Generation = gen
-			}
-		} else if gen == 0 {
-			return fmt.Errorf("cannot publish legacy import %s without durable generation assignment", jobID)
-		}
+	if gen != 0 {
+		return gen, nil
 	}
+	// Legacy job queued before generation tracking was introduced.
+	// Allocate a sequential generation from Songbooks and persist it durably.
+	if runner.Books == nil || runner.Imports == nil {
+		return 0, fmt.Errorf("cannot publish legacy import %s without durable generation assignment", ref.jobID)
+	}
+	allocatedGen, allocErr := runner.Books.NextCatalogGeneration(ctx, ref.songbookID)
+	if allocErr != nil {
+		return 0, fmt.Errorf("allocate legacy catalog generation: %w", allocErr)
+	}
+	assignedGen, assignErr := runner.Imports.AssignImportJobGeneration(ctx, ref.jobID, allocatedGen)
+	if assignErr != nil {
+		return 0, fmt.Errorf("persist legacy catalog generation: %w", assignErr)
+	}
+	if storedJob != nil {
+		storedJob.Generation = assignedGen
+	}
+	return assignedGen, nil
+}
 
-	pubOpts := store.PublicationOptions{
-		JobGeneration:  gen,
-		JobID:          jobID,
-		ProcessedSongs: len(manifest.Songs),
-	}
-	if _, err := runner.BuildManifestCatalog(ctx, songbookID, manifest.Songs, pruneMissing, pubOpts); err != nil {
-		if errors.Is(err, store.ErrImportJobAlreadyCompleted) {
-			log.Printf("catalog-worker: import %s already completed; acknowledging redelivery", jobID)
-			if _, delErr := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); delErr != nil {
-				return fmt.Errorf("delete completed source manifest: %w", delErr)
+func handleManifestBuildError(ctx context.Context, runner *catalog.Runner, client s3ManifestAPI, ref manifestRef, err error) error {
+	switch {
+	case errors.Is(err, store.ErrImportJobAlreadyCompleted):
+		log.Printf("catalog-worker: import %s already completed; acknowledging redelivery", ref.jobID)
+		return deleteSourceManifest(ctx, client, ref, "delete completed source manifest")
+	case errors.Is(err, store.ErrImportJobTerminal):
+		log.Printf("catalog-worker: import %s is terminal failed; discarding", ref.jobID)
+		return deleteSourceManifest(ctx, client, ref, "delete failed source manifest")
+	case errors.Is(err, store.ErrPublicationSuperseded):
+		log.Printf("catalog-worker: import %s for songbook %s was superseded by newer catalog publication; marking failed", ref.jobID, ref.songbookID)
+		if runner.Imports != nil {
+			if failErr := runner.Imports.FailImportJob(ctx, ref.jobID, "import superseded by newer catalog publication"); failErr != nil {
+				return fmt.Errorf("record import job supersession: %w", failErr)
 			}
-			return nil
 		}
-		if errors.Is(err, store.ErrImportJobTerminal) {
-			log.Printf("catalog-worker: import %s is terminal failed; discarding", jobID)
-			if _, delErr := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); delErr != nil {
-				return fmt.Errorf("delete failed source manifest: %w", delErr)
-			}
-			return nil
-		}
-		if errors.Is(err, store.ErrPublicationSuperseded) {
-			log.Printf("catalog-worker: import %s for songbook %s was superseded by newer catalog publication; marking failed", jobID, songbookID)
-			if runner.Imports != nil {
-				if failErr := runner.Imports.FailImportJob(ctx, jobID, "import superseded by newer catalog publication"); failErr != nil {
-					return fmt.Errorf("record import job supersession: %w", failErr)
-				}
-			}
-			if _, delErr := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); delErr != nil {
-				return fmt.Errorf("delete superseded source manifest: %w", delErr)
-			}
-			return nil
-		}
+		return deleteSourceManifest(ctx, client, ref, "delete superseded source manifest")
+	default:
 		// Base version conflict (or transient storage error): preserve manifest in S3 and return error for SQS retry.
 		return err
 	}
-	if _, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &bucket, Key: &key}); err != nil {
-		return fmt.Errorf("delete source manifest: %w", err)
+}
+
+func deleteSourceManifest(ctx context.Context, client s3ManifestAPI, ref manifestRef, action string) error {
+	if _, err := client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: &ref.bucket, Key: &ref.key}); err != nil {
+		return fmt.Errorf("%s: %w", action, err)
 	}
 	return nil
 }

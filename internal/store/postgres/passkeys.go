@@ -301,42 +301,46 @@ func (s *Store) RecordPasskeyUse(ctx context.Context, observed *models.PasskeyCr
 			return nil
 		}
 
-		// Classify failure matching DynamoDB transaction cancellation order:
-		// credential mismatch/absence returns ErrPasskeyChanged before checking user deletion.
-		var (
-			curUserID         string
-			curPubKey         []byte
-			curSignCount      int64
-			curBackupEligible bool
-		)
-		err = tx.QueryRow(ctx,
-			`SELECT user_id, public_key, sign_count, backup_eligible
-			 FROM passkey_credentials WHERE id = $1`,
-			observed.ID,
-		).Scan(&curUserID, &curPubKey, &curSignCount, &curBackupEligible)
-		if isNotFound(err) {
-			return store.ErrPasskeyChanged
-		}
-		if err != nil {
-			return fmt.Errorf("record passkey use: %w", err)
-		}
-		if curUserID != observed.UserID ||
-			!bytes.Equal(curPubKey, observed.PublicKey) ||
-			curSignCount != int64(observed.SignCount) ||
-			curBackupEligible != observed.BackupEligible {
-			return store.ErrPasskeyChanged
-		}
-
-		var deleting bool
-		err = tx.QueryRow(ctx, `SELECT deleting FROM users WHERE id = $1`, observed.UserID).Scan(&deleting)
-		if isNotFound(err) || (err == nil && deleting) {
-			return store.ErrAccountDeleting
-		}
-		if err != nil {
-			return fmt.Errorf("record passkey use: %w", err)
-		}
-		return store.ErrPasskeyChanged
+		return classifyPasskeyUseFailure(ctx, tx, observed)
 	})
+}
+
+func classifyPasskeyUseFailure(ctx context.Context, tx pgx.Tx, observed *models.PasskeyCredential) error {
+	// Classify failure matching DynamoDB transaction cancellation order:
+	// credential mismatch/absence returns ErrPasskeyChanged before checking user deletion.
+	var (
+		curUserID         string
+		curPubKey         []byte
+		curSignCount      int64
+		curBackupEligible bool
+	)
+	err := tx.QueryRow(ctx,
+		`SELECT user_id, public_key, sign_count, backup_eligible
+		 FROM passkey_credentials WHERE id = $1`,
+		observed.ID,
+	).Scan(&curUserID, &curPubKey, &curSignCount, &curBackupEligible)
+	if isNotFound(err) {
+		return store.ErrPasskeyChanged
+	}
+	if err != nil {
+		return fmt.Errorf("record passkey use: %w", err)
+	}
+	if curUserID != observed.UserID ||
+		!bytes.Equal(curPubKey, observed.PublicKey) ||
+		curSignCount != int64(observed.SignCount) ||
+		curBackupEligible != observed.BackupEligible {
+		return store.ErrPasskeyChanged
+	}
+
+	var deleting bool
+	err = tx.QueryRow(ctx, `SELECT deleting FROM users WHERE id = $1`, observed.UserID).Scan(&deleting)
+	if isNotFound(err) || (err == nil && deleting) {
+		return store.ErrAccountDeleting
+	}
+	if err != nil {
+		return fmt.Errorf("record passkey use: %w", err)
+	}
+	return store.ErrPasskeyChanged
 }
 
 // DeletePasskeyCredential deletes a passkey ensuring it belongs to the given user.

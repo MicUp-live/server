@@ -125,6 +125,10 @@ func (s *Service) Authorize(ctx context.Context, actorID, songbookID string, act
 		sb.Permissions = perms
 		return sb, perms, nil
 	}
+	return s.authorizeCollaborator(ctx, sb, songbookID, actorID, action)
+}
+
+func (s *Service) authorizeCollaborator(ctx context.Context, sb *models.Songbook, songbookID, actorID string, action Action) (*models.Songbook, *models.SongbookPermissions, error) {
 	if s.Access == nil {
 		return nil, nil, ErrSongbookNotFound
 	}
@@ -140,12 +144,28 @@ func (s *Service) Authorize(ctx context.Context, actorID, songbookID string, act
 	if !permissionAllows(perms, action) {
 		return sb, perms, store.ErrPermissionDenied
 	}
-	if s.Auth != nil && sb.OwnerID != "" {
-		if owner, uErr := s.Auth.GetUser(ctx, sb.OwnerID); uErr == nil && owner != nil {
-			sb.OwnerDisplayName = owner.DisplayName
+	s.populateOwnerDisplayName(ctx, sb, nil)
+	return sb, perms, nil
+}
+
+func (s *Service) populateOwnerDisplayName(ctx context.Context, sb *models.Songbook, cache map[string]string) {
+	if s.Auth == nil || sb.OwnerID == "" {
+		return
+	}
+	if cache != nil {
+		if name, ok := cache[sb.OwnerID]; ok {
+			sb.OwnerDisplayName = name
+			return
 		}
 	}
-	return sb, perms, nil
+	owner, err := s.Auth.GetUser(ctx, sb.OwnerID)
+	if err != nil || owner == nil {
+		return
+	}
+	if cache != nil {
+		cache[sb.OwnerID] = owner.DisplayName
+	}
+	sb.OwnerDisplayName = owner.DisplayName
 }
 
 // WithEditContext attaches the collaborator edit-grant fence when actorID is not the book owner.
@@ -179,39 +199,38 @@ func (s *Service) ListAccessibleSongbooks(ctx context.Context, actorID string) (
 		seen[sb.ID] = struct{}{}
 		result = append(result, sb)
 	}
-	if s.Access != nil {
-		grants, err := s.Access.ListSongbookGrantsByUser(ctx, actorID)
-		if err != nil {
-			return nil, err
-		}
-		ownerNames := make(map[string]string)
-		for _, g := range grants {
-			if _, ok := seen[g.SongbookID]; ok {
-				continue
-			}
-			if !g.CanEditCatalog && !g.CanHostShows {
-				continue
-			}
-			sb, sbErr := s.Songbooks.GetSongbook(ctx, g.SongbookID)
-			if sbErr != nil || sb == nil || sb.Deleting {
-				continue
-			}
-			sb.Permissions = grantPermissions(g)
-			if s.Auth != nil && sb.OwnerID != "" {
-				if name, ok := ownerNames[sb.OwnerID]; ok {
-					sb.OwnerDisplayName = name
-				} else if owner, uErr := s.Auth.GetUser(ctx, sb.OwnerID); uErr == nil && owner != nil {
-					ownerNames[sb.OwnerID] = owner.DisplayName
-					sb.OwnerDisplayName = owner.DisplayName
-				}
-			}
-			seen[sb.ID] = struct{}{}
-			result = append(result, sb)
-		}
+	result, err = s.appendGrantedSongbooks(ctx, actorID, seen, result)
+	if err != nil {
+		return nil, err
 	}
 	sort.SliceStable(result, func(i, j int) bool {
 		return result[i].CreatedAt.Before(result[j].CreatedAt)
 	})
+	return result, nil
+}
+
+func (s *Service) appendGrantedSongbooks(ctx context.Context, actorID string, seen map[string]struct{}, result []*models.Songbook) ([]*models.Songbook, error) {
+	if s.Access == nil {
+		return result, nil
+	}
+	grants, err := s.Access.ListSongbookGrantsByUser(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
+	ownerNames := make(map[string]string)
+	for _, g := range grants {
+		if _, ok := seen[g.SongbookID]; ok || (!g.CanEditCatalog && !g.CanHostShows) {
+			continue
+		}
+		sb, sbErr := s.Songbooks.GetSongbook(ctx, g.SongbookID)
+		if sbErr != nil || sb == nil || sb.Deleting {
+			continue
+		}
+		sb.Permissions = grantPermissions(g)
+		s.populateOwnerDisplayName(ctx, sb, ownerNames)
+		seen[sb.ID] = struct{}{}
+		result = append(result, sb)
+	}
 	return result, nil
 }
 
@@ -277,46 +296,86 @@ func (s *Service) CreateInvitation(ctx context.Context, owner *models.User, song
 	if !canEdit && !canHost {
 		return nil, ErrPermissionRequired
 	}
-	normEmail := normalizeEmail(recipientEmail)
-	if normEmail == "" || !strings.Contains(normEmail, "@") || strings.HasPrefix(normEmail, "@") || strings.HasSuffix(normEmail, "@") {
-		return nil, ErrInvalidEmail
-	}
-	if normEmail == normalizeEmail(owner.Email) {
-		return nil, ErrCannotInviteOwner
+	normEmail, err := validateInvitationEmail(recipientEmail, owner.Email)
+	if err != nil {
+		return nil, err
 	}
 	rawToken, tokenHash, err := generateInvitationToken()
 	if err != nil {
 		return nil, err
 	}
-	ttl := s.InvitationTTL
-	if ttl <= 0 {
-		ttl = DefaultInvitationTTL
+	inv, err := s.createPendingInvitationWithRetry(ctx, sb.ID, owner.ID, normEmail, tokenHash, canEdit, canHost)
+	if err != nil {
+		return nil, err
 	}
+	if err := s.deliverInvitationEmail(ctx, inv, sb.Name, owner.DisplayName, rawToken, tokenHash, baseURL); err != nil {
+		return nil, err
+	}
+	return inv, nil
+}
+
+func validateInvitationEmail(recipientEmail, ownerEmail string) (string, error) {
+	normEmail := normalizeEmail(recipientEmail)
+	if normEmail == "" || !strings.Contains(normEmail, "@") || strings.HasPrefix(normEmail, "@") || strings.HasSuffix(normEmail, "@") {
+		return "", ErrInvalidEmail
+	}
+	if normEmail == normalizeEmail(ownerEmail) {
+		return "", ErrCannotInviteOwner
+	}
+	return normEmail, nil
+}
+
+func (s *Service) invitationTTL() time.Duration {
+	if s.InvitationTTL > 0 {
+		return s.InvitationTTL
+	}
+	return DefaultInvitationTTL
+}
+
+func (s *Service) ensureNotCollaborator(ctx context.Context, songbookID, normEmail string) error {
+	if s.Auth == nil {
+		return nil
+	}
+	existingUser, uErr := s.Auth.GetUserByEmail(ctx, normEmail)
+	if uErr != nil || existingUser == nil || existingUser.Deleting {
+		return nil
+	}
+	if _, gErr := s.Access.GetSongbookGrant(ctx, songbookID, existingUser.ID); gErr == nil {
+		return ErrAlreadyCollaborator
+	}
+	return nil
+}
+
+func (s *Service) pendingInvitationIDsForEmail(ctx context.Context, songbookID, normEmail string) ([]string, error) {
+	existingInvites, err := s.Access.ListSongbookInvitationsBySongbook(ctx, songbookID)
+	if err != nil {
+		return nil, err
+	}
+	var replaceIDs []string
+	for _, existing := range existingInvites {
+		if existing.Status == models.InvitationStatusPending && normalizeEmail(existing.RecipientEmail) == normEmail {
+			replaceIDs = append(replaceIDs, existing.ID)
+		}
+	}
+	return replaceIDs, nil
+}
+
+func (s *Service) createPendingInvitationWithRetry(ctx context.Context, songbookID, ownerID, normEmail, tokenHash string, canEdit, canHost bool) (*models.SongbookInvitation, error) {
+	ttl := s.invitationTTL()
 	const maxConflictAttempts = 5
-	var inv *models.SongbookInvitation
 	for attempt := 0; attempt < maxConflictAttempts; attempt++ {
-		if s.Auth != nil {
-			if existingUser, uErr := s.Auth.GetUserByEmail(ctx, normEmail); uErr == nil && existingUser != nil && !existingUser.Deleting {
-				if _, gErr := s.Access.GetSongbookGrant(ctx, songbookID, existingUser.ID); gErr == nil {
-					return nil, ErrAlreadyCollaborator
-				}
-			}
+		if err := s.ensureNotCollaborator(ctx, songbookID, normEmail); err != nil {
+			return nil, err
 		}
-		existingInvites, listErr := s.Access.ListSongbookInvitationsBySongbook(ctx, songbookID)
-		if listErr != nil {
-			return nil, listErr
-		}
-		var replaceIDs []string
-		for _, existing := range existingInvites {
-			if existing.Status == models.InvitationStatusPending && normalizeEmail(existing.RecipientEmail) == normEmail {
-				replaceIDs = append(replaceIDs, existing.ID)
-			}
+		replaceIDs, err := s.pendingInvitationIDsForEmail(ctx, songbookID, normEmail)
+		if err != nil {
+			return nil, err
 		}
 		now := s.now()
 		candidate := &models.SongbookInvitation{
 			ID:             uuid.NewString(),
-			SongbookID:     sb.ID,
-			OwnerID:        owner.ID,
+			SongbookID:     songbookID,
+			OwnerID:        ownerID,
 			RecipientEmail: normEmail,
 			CanEditCatalog: canEdit,
 			CanHostShows:   canHost,
@@ -328,22 +387,13 @@ func (s *Service) CreateInvitation(ctx context.Context, owner *models.User, song
 		}
 		createErr := s.Access.CreateSongbookInvitation(ctx, candidate, replaceIDs)
 		if createErr == nil {
-			inv = candidate
-			break
+			return candidate, nil
 		}
-		if errors.Is(createErr, store.ErrInvitationConflict) {
-			continue
+		if !errors.Is(createErr, store.ErrInvitationConflict) {
+			return nil, createErr
 		}
-		return nil, createErr
 	}
-	if inv == nil {
-		return nil, store.ErrInvitationConflict
-	}
-
-	if err := s.deliverInvitationEmail(ctx, inv, sb.Name, owner.DisplayName, rawToken, tokenHash, baseURL); err != nil {
-		return nil, err
-	}
-	return inv, nil
+	return nil, store.ErrInvitationConflict
 }
 
 // ResendInvitation issues a fresh single-use link (invalidating the previous one) and sends the email.

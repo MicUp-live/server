@@ -54,49 +54,14 @@ type Dependencies struct {
 
 // NewRouter builds the complete API route and middleware stack.
 func NewRouter(cfg config.Config, dependencies Dependencies) (http.Handler, error) {
-	authHandler, err := handlers.NewAuthHandler(dependencies.Auth, cfg.AuthSecret)
-	if err != nil {
-		return nil, err
-	}
-	authHandler.PublicBaseURL = cfg.PublicBaseURL
-	authHandler.CookieSecure = cfg.Environment == config.Production
-	if dependencies.EmailSender != nil {
-		authHandler.EmailSender = dependencies.EmailSender
-	}
 	songbookAccess := dependencies.SongbookAccess
 	retentionDuration := time.Duration(defaultInt(cfg.QueueRetentionDays, 14)) * 24 * time.Hour
 
-	accountService := account.NewService(
-		dependencies.Auth,
-		dependencies.Passkeys,
-		dependencies.Songbooks,
-		dependencies.Events,
-		dependencies.Requests,
-		dependencies.Catalogs,
-		dependencies.CatalogReader,
-		dependencies.CatalogChanges,
-		dependencies.ImportJobs,
-		dependencies.ManifestWriter,
-	).WithDeveloperKeys(dependencies.DeveloperKeys).WithAccess(songbookAccess)
-	accountService.QueueRetention = retentionDuration
-
-	privacyHandler := &handlers.PrivacyHandler{
-		Auth:           dependencies.Auth,
-		Passkeys:       dependencies.Passkeys,
-		DeveloperKeys:  dependencies.DeveloperKeys,
-		Songbooks:      dependencies.Songbooks,
-		Events:         dependencies.Events,
-		Requests:       dependencies.Requests,
-		Catalogs:       dependencies.Catalogs,
-		CatalogReader:  dependencies.CatalogReader,
-		CatalogChanges: dependencies.CatalogChanges,
-		ImportJobs:     dependencies.ImportJobs,
-		Assets:         dependencies.ManifestWriter,
-		Access:         songbookAccess,
-		QueueRetention: retentionDuration,
-		AuthHandler:    authHandler,
-		AccountService: accountService,
+	authHandler, privacyHandler, err := newAuthAndPrivacyHandlers(cfg, dependencies, songbookAccess, retentionDuration)
+	if err != nil {
+		return nil, err
 	}
+
 	var passkeyHandler *handlers.PasskeyHandler
 	if dependencies.Passkeys != nil {
 		passkeyHandler, err = handlers.NewPasskeyHandler(dependencies.Auth, dependencies.Passkeys, authHandler)
@@ -185,6 +150,149 @@ func NewRouter(cfg config.Config, dependencies Dependencies) (http.Handler, erro
 	requestLimited := newRateLimiter(dependencies.RateLimits, "request", defaultInt(cfg.PublicRequestLimit, 12), time.Minute).middleware
 	inviteLimited := newRateLimiter(dependencies.RateLimits, "invite", defaultInt(cfg.AuthRateLimit, 10), time.Minute).middleware
 
+	registerHealthAndAuthRoutes(mux, dependencies, authHandler, privacyHandler, passkeyHandler, authLimited)
+
+	guards := routeGuards{
+		auth:      authHandler,
+		developer: developerHandler,
+		songbook:  songbookHandler,
+		event:     eventHandler,
+	}
+
+	mux.HandleFunc("POST /api/v1/songbooks", guards.scopedHost(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateSongbook))
+	mux.HandleFunc("GET /api/v1/songbooks", guards.scopedHost(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ListSongbooks))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}", guards.discoverBook(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetSongbook))
+	mux.HandleFunc("PATCH /api/v1/songbooks/{id}", guards.manageBook(handlers.DeveloperScopeCatalogsWrite, songbookHandler.UpdateSongbook))
+	mux.HandleFunc("DELETE /api/v1/songbooks/{id}", guards.manageBook(handlers.DeveloperScopeCatalogsWrite, songbookHandler.DeleteSongbook))
+
+	// Songbook collaboration access and invitation routes (host session required)
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/access", guards.manageAccess(songbookHandler.GetSongbookAccess))
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/invitations", inviteLimited(guards.manageAccess(songbookHandler.CreateSongbookInvitation)))
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/invitations/{invitationID}/resend", inviteLimited(guards.manageAccess(songbookHandler.ResendSongbookInvitation)))
+	mux.HandleFunc("DELETE /api/v1/songbooks/{id}/invitations/{invitationID}", guards.manageAccess(songbookHandler.CancelSongbookInvitation))
+	mux.HandleFunc("PATCH /api/v1/songbooks/{id}/members/{userID}", guards.manageAccess(songbookHandler.UpdateSongbookMember))
+	mux.HandleFunc("DELETE /api/v1/songbooks/{id}/members/{userID}", guards.manageAccess(songbookHandler.RemoveSongbookMember))
+	mux.HandleFunc("GET /api/v1/songbook-invitations/preview", authLimited(authHandler.OptionalAuth(songbookHandler.PreviewSongbookInvitation)))
+	mux.HandleFunc("POST /api/v1/songbook-invitations/accept", authHandler.RequireAuth(songbookHandler.AcceptSongbookInvitation))
+
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/songs", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateSong))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/songs", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ListSongs))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/managed-manifest", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetManagedManifest))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/catalog-overrides", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetCatalogOverrides))
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/songs/batch-delete", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.BatchDeleteSongs))
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/songs/clear", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ClearSongs))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/songs/{songID}", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetSong))
+	mux.HandleFunc("PATCH /api/v1/songbooks/{id}/songs/{songID}", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.UpdateSong))
+	mux.HandleFunc("DELETE /api/v1/songbooks/{id}/songs/{songID}", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.DeleteSong))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/public-manifest", songbookHandler.GetPublicManifest)
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/public-overrides", songbookHandler.GetPublicOverrides)
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/import-jobs", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateImportJob))
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/import-uploads", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateImportUpload))
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/import-jobs/{jobID}/complete", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CompleteImportUpload))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/import-jobs/{jobID}", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetImportJob))
+	mux.HandleFunc("GET /api/v1/songbooks/{id}/import-jobs/latest", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetLatestImportJob))
+	mux.HandleFunc("POST /api/v1/songbooks/{id}/parse-files", guards.editCatalog(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ParseFiles))
+
+	// Events Management (Host)
+	mux.HandleFunc("POST /api/v1/events", guards.scopedHost(handlers.DeveloperScopeEventsWrite, eventHandler.CreateEvent))
+	mux.HandleFunc("GET /api/v1/events", guards.scopedHost(handlers.DeveloperScopeEventsRead, eventHandler.ListEvents))
+	mux.HandleFunc("GET /api/v1/events/{id}", guards.ownedEvent(handlers.DeveloperScopeEventsRead, eventHandler.GetEvent))
+	mux.HandleFunc("PATCH /api/v1/events/{id}", guards.ownedEvent(handlers.DeveloperScopeEventsWrite, eventHandler.UpdateEvent))
+	mux.HandleFunc("POST /api/v1/events/{id}/restart", guards.ownedEvent(handlers.DeveloperScopeEventsWrite, eventHandler.RestartEvent))
+	mux.HandleFunc("POST /api/v1/events/{id}/openkj-key/rotate", guards.ownedEvent(handlers.DeveloperScopeEventsWrite, eventHandler.RotateOpenKJKey))
+	mux.HandleFunc("POST /api/v1/events/{id}/pause", guards.ownedEvent(handlers.DeveloperScopeEventsWrite, eventHandler.PauseEvent))
+	mux.HandleFunc("POST /api/v1/events/{id}/resume", guards.ownedEvent(handlers.DeveloperScopeEventsWrite, eventHandler.ResumeEvent))
+	mux.HandleFunc("DELETE /api/v1/events/{id}", guards.ownedEvent(handlers.DeveloperScopeEventsWrite, eventHandler.DeleteEvent))
+
+	// Public Event & Join Code resolution
+	mux.HandleFunc("GET /api/v1/join/{code}", requestLimited(eventHandler.GetEventByCode))
+	mux.HandleFunc("GET /api/v1/events/{id}/public", eventHandler.GetPublicEvent)
+	mux.HandleFunc("POST /api/v1/events/{id}/kiosk/verify-pin", requestLimited(eventHandler.VerifyKioskPIN))
+	mux.HandleFunc("POST /api/v1/events/{id}/requests", requestLimited(queueHandler.CreateEventRequest))
+	mux.HandleFunc("GET /api/v1/events/{id}/queue", queueHandler.GetEventPublicQueue)
+	mux.HandleFunc("GET /api/v1/events/{id}/requests/{requestID}", authHandler.OptionalAuth(queueHandler.GetRequest))
+	mux.HandleFunc("PATCH /api/v1/events/{id}/requests/{requestID}/song", requestLimited(queueHandler.ReplaceEventRequestSong))
+	mux.HandleFunc("DELETE /api/v1/events/{id}/requests/{requestID}", authHandler.OptionalAuth(queueHandler.DeleteRequest))
+
+	// Host Event Queue Management
+	mux.HandleFunc("GET /api/v1/events/{id}/requests", guards.ownedEvent(handlers.DeveloperScopeRequestsRead, queueHandler.ListEventRequests))
+	mux.HandleFunc("PATCH /api/v1/events/{id}/requests/{requestID}", guards.ownedEvent(handlers.DeveloperScopeRequestsWrite, queueHandler.UpdateEventRequest))
+	mux.HandleFunc("POST /api/v1/events/{id}/requests/{requestID}/defer", guards.ownedEvent(handlers.DeveloperScopeRequestsWrite, queueHandler.DeferEventRequest))
+	mux.HandleFunc("POST /api/v1/events/{id}/requests/reorder", guards.ownedEvent(handlers.DeveloperScopeRequestsWrite, queueHandler.ReorderEventRequests))
+
+	registerOpenKJRoutes(mux, openkjHandler)
+
+	// API Keys (Host Personal Access Token management)
+	if developerHandler != nil {
+		mux.HandleFunc("POST /api/v1/api-keys", guards.hostOnly(developerHandler.CreateKey))
+		mux.HandleFunc("GET /api/v1/api-keys", guards.hostOnly(developerHandler.ListKeys))
+		mux.HandleFunc("DELETE /api/v1/api-keys/{id}", guards.hostOnly(developerHandler.RevokeKey))
+	}
+
+	// Undocumented Reference Catalog & Source Archive API
+	registerReferenceRoutes(mux, dependencies.ReferenceStore)
+
+	return loggingMiddleware(corsMiddleware(mux, cfg.AllowedOrigins)), nil
+}
+
+func newAuthAndPrivacyHandlers(
+	cfg config.Config,
+	dependencies Dependencies,
+	songbookAccess store.SongbookAccessStore,
+	retentionDuration time.Duration,
+) (*handlers.AuthHandler, *handlers.PrivacyHandler, error) {
+	authHandler, err := handlers.NewAuthHandler(dependencies.Auth, cfg.AuthSecret)
+	if err != nil {
+		return nil, nil, err
+	}
+	authHandler.PublicBaseURL = cfg.PublicBaseURL
+	authHandler.CookieSecure = cfg.Environment == config.Production
+	if dependencies.EmailSender != nil {
+		authHandler.EmailSender = dependencies.EmailSender
+	}
+
+	accountService := account.NewService(
+		dependencies.Auth,
+		dependencies.Passkeys,
+		dependencies.Songbooks,
+		dependencies.Events,
+		dependencies.Requests,
+		dependencies.Catalogs,
+		dependencies.CatalogReader,
+		dependencies.CatalogChanges,
+		dependencies.ImportJobs,
+		dependencies.ManifestWriter,
+	).WithDeveloperKeys(dependencies.DeveloperKeys).WithAccess(songbookAccess)
+	accountService.QueueRetention = retentionDuration
+
+	privacyHandler := &handlers.PrivacyHandler{
+		Auth:           dependencies.Auth,
+		Passkeys:       dependencies.Passkeys,
+		DeveloperKeys:  dependencies.DeveloperKeys,
+		Songbooks:      dependencies.Songbooks,
+		Events:         dependencies.Events,
+		Requests:       dependencies.Requests,
+		Catalogs:       dependencies.Catalogs,
+		CatalogReader:  dependencies.CatalogReader,
+		CatalogChanges: dependencies.CatalogChanges,
+		ImportJobs:     dependencies.ImportJobs,
+		Assets:         dependencies.ManifestWriter,
+		Access:         songbookAccess,
+		QueueRetention: retentionDuration,
+		AuthHandler:    authHandler,
+		AccountService: accountService,
+	}
+	return authHandler, privacyHandler, nil
+}
+
+func registerHealthAndAuthRoutes(
+	mux *http.ServeMux,
+	dependencies Dependencies,
+	authHandler *handlers.AuthHandler,
+	privacyHandler *handlers.PrivacyHandler,
+	passkeyHandler *handlers.PasskeyHandler,
+	authLimited func(http.HandlerFunc) http.HandlerFunc,
+) {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -223,107 +331,9 @@ func NewRouter(cfg config.Config, dependencies Dependencies) (http.Handler, erro
 		mux.HandleFunc("GET /api/v1/auth/passkeys", authHandler.RequireAuth(passkeyHandler.ListPasskeys))
 		mux.HandleFunc("DELETE /api/v1/auth/passkeys/{id}", authHandler.RequireAuth(passkeyHandler.DeletePasskey))
 	}
+}
 
-	hostAuthWithScope := func(scope string) func(http.HandlerFunc) http.HandlerFunc {
-		return func(next http.HandlerFunc) http.HandlerFunc {
-			return func(w http.ResponseWriter, r *http.Request) {
-				token := strings.TrimSpace(r.Header.Get("Authorization"))
-				token = strings.TrimPrefix(token, "Bearer ")
-				if strings.HasPrefix(token, "mk_live_") && developerHandler != nil {
-					developerNext := next
-					if scope != "" {
-						developerNext = developerHandler.RequireScope(scope, next)
-					}
-					developerHandler.RequireDeveloperKey(developerNext).ServeHTTP(w, r)
-					return
-				}
-				authHandler.RequireAuth(authHandler.RequireHost(next)).ServeHTTP(w, r)
-			}
-		}
-	}
-	hostOnly := func(next http.HandlerFunc) http.HandlerFunc {
-		return authHandler.RequireAuth(authHandler.RequireHost(next))
-	}
-	scopedHost := func(scope string, next http.HandlerFunc) http.HandlerFunc {
-		return hostAuthWithScope(scope)(next)
-	}
-	discoverBookScoped := func(scope string, next http.HandlerFunc) http.HandlerFunc {
-		return scopedHost(scope, songbookHandler.RequireAction(songbook.ActionDiscover, next))
-	}
-	editCatalogScoped := func(scope string, next http.HandlerFunc) http.HandlerFunc {
-		return scopedHost(scope, songbookHandler.RequireAction(songbook.ActionEditCatalog, next))
-	}
-	manageBookScoped := func(scope string, next http.HandlerFunc) http.HandlerFunc {
-		return scopedHost(scope, songbookHandler.RequireAction(songbook.ActionManageBook, next))
-	}
-	manageAccessHost := func(next http.HandlerFunc) http.HandlerFunc {
-		return hostOnly(songbookHandler.RequireAction(songbook.ActionManageAccess, next))
-	}
-	ownedEventScoped := func(scope string, next http.HandlerFunc) http.HandlerFunc {
-		return scopedHost(scope, eventHandler.RequireOwnership(next))
-	}
-
-	mux.HandleFunc("POST /api/v1/songbooks", scopedHost(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateSongbook))
-	mux.HandleFunc("GET /api/v1/songbooks", scopedHost(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ListSongbooks))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}", discoverBookScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetSongbook))
-	mux.HandleFunc("PATCH /api/v1/songbooks/{id}", manageBookScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.UpdateSongbook))
-	mux.HandleFunc("DELETE /api/v1/songbooks/{id}", manageBookScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.DeleteSongbook))
-
-	// Songbook collaboration access and invitation routes (host session required)
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/access", manageAccessHost(songbookHandler.GetSongbookAccess))
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/invitations", inviteLimited(manageAccessHost(songbookHandler.CreateSongbookInvitation)))
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/invitations/{invitationID}/resend", inviteLimited(manageAccessHost(songbookHandler.ResendSongbookInvitation)))
-	mux.HandleFunc("DELETE /api/v1/songbooks/{id}/invitations/{invitationID}", manageAccessHost(songbookHandler.CancelSongbookInvitation))
-	mux.HandleFunc("PATCH /api/v1/songbooks/{id}/members/{userID}", manageAccessHost(songbookHandler.UpdateSongbookMember))
-	mux.HandleFunc("DELETE /api/v1/songbooks/{id}/members/{userID}", manageAccessHost(songbookHandler.RemoveSongbookMember))
-	mux.HandleFunc("GET /api/v1/songbook-invitations/preview", authLimited(authHandler.OptionalAuth(songbookHandler.PreviewSongbookInvitation)))
-	mux.HandleFunc("POST /api/v1/songbook-invitations/accept", authHandler.RequireAuth(songbookHandler.AcceptSongbookInvitation))
-
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/songs", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateSong))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/songs", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ListSongs))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/managed-manifest", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetManagedManifest))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/catalog-overrides", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetCatalogOverrides))
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/songs/batch-delete", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.BatchDeleteSongs))
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/songs/clear", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ClearSongs))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/songs/{songID}", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetSong))
-	mux.HandleFunc("PATCH /api/v1/songbooks/{id}/songs/{songID}", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.UpdateSong))
-	mux.HandleFunc("DELETE /api/v1/songbooks/{id}/songs/{songID}", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.DeleteSong))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/public-manifest", songbookHandler.GetPublicManifest)
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/public-overrides", songbookHandler.GetPublicOverrides)
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/import-jobs", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateImportJob))
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/import-uploads", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CreateImportUpload))
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/import-jobs/{jobID}/complete", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.CompleteImportUpload))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/import-jobs/{jobID}", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetImportJob))
-	mux.HandleFunc("GET /api/v1/songbooks/{id}/import-jobs/latest", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.GetLatestImportJob))
-	mux.HandleFunc("POST /api/v1/songbooks/{id}/parse-files", editCatalogScoped(handlers.DeveloperScopeCatalogsWrite, songbookHandler.ParseFiles))
-
-	// Events Management (Host)
-	mux.HandleFunc("POST /api/v1/events", scopedHost(handlers.DeveloperScopeEventsWrite, eventHandler.CreateEvent))
-	mux.HandleFunc("GET /api/v1/events", scopedHost(handlers.DeveloperScopeEventsRead, eventHandler.ListEvents))
-	mux.HandleFunc("GET /api/v1/events/{id}", ownedEventScoped(handlers.DeveloperScopeEventsRead, eventHandler.GetEvent))
-	mux.HandleFunc("PATCH /api/v1/events/{id}", ownedEventScoped(handlers.DeveloperScopeEventsWrite, eventHandler.UpdateEvent))
-	mux.HandleFunc("POST /api/v1/events/{id}/restart", ownedEventScoped(handlers.DeveloperScopeEventsWrite, eventHandler.RestartEvent))
-	mux.HandleFunc("POST /api/v1/events/{id}/openkj-key/rotate", ownedEventScoped(handlers.DeveloperScopeEventsWrite, eventHandler.RotateOpenKJKey))
-	mux.HandleFunc("POST /api/v1/events/{id}/pause", ownedEventScoped(handlers.DeveloperScopeEventsWrite, eventHandler.PauseEvent))
-	mux.HandleFunc("POST /api/v1/events/{id}/resume", ownedEventScoped(handlers.DeveloperScopeEventsWrite, eventHandler.ResumeEvent))
-	mux.HandleFunc("DELETE /api/v1/events/{id}", ownedEventScoped(handlers.DeveloperScopeEventsWrite, eventHandler.DeleteEvent))
-
-	// Public Event & Join Code resolution
-	mux.HandleFunc("GET /api/v1/join/{code}", requestLimited(eventHandler.GetEventByCode))
-	mux.HandleFunc("GET /api/v1/events/{id}/public", eventHandler.GetPublicEvent)
-	mux.HandleFunc("POST /api/v1/events/{id}/kiosk/verify-pin", requestLimited(eventHandler.VerifyKioskPIN))
-	mux.HandleFunc("POST /api/v1/events/{id}/requests", requestLimited(queueHandler.CreateEventRequest))
-	mux.HandleFunc("GET /api/v1/events/{id}/queue", queueHandler.GetEventPublicQueue)
-	mux.HandleFunc("GET /api/v1/events/{id}/requests/{requestID}", authHandler.OptionalAuth(queueHandler.GetRequest))
-	mux.HandleFunc("PATCH /api/v1/events/{id}/requests/{requestID}/song", requestLimited(queueHandler.ReplaceEventRequestSong))
-	mux.HandleFunc("DELETE /api/v1/events/{id}/requests/{requestID}", authHandler.OptionalAuth(queueHandler.DeleteRequest))
-
-	// Host Event Queue Management
-	mux.HandleFunc("GET /api/v1/events/{id}/requests", ownedEventScoped(handlers.DeveloperScopeRequestsRead, queueHandler.ListEventRequests))
-	mux.HandleFunc("PATCH /api/v1/events/{id}/requests/{requestID}", ownedEventScoped(handlers.DeveloperScopeRequestsWrite, queueHandler.UpdateEventRequest))
-	mux.HandleFunc("POST /api/v1/events/{id}/requests/{requestID}/defer", ownedEventScoped(handlers.DeveloperScopeRequestsWrite, queueHandler.DeferEventRequest))
-	mux.HandleFunc("POST /api/v1/events/{id}/requests/reorder", ownedEventScoped(handlers.DeveloperScopeRequestsWrite, queueHandler.ReorderEventRequests))
-
+func registerOpenKJRoutes(mux *http.ServeMux, openkjHandler *handlers.OpenKJHandler) {
 	// OpenKJ Request-Server Compatibility Adapter
 	mux.HandleFunc("GET /api/v1/openkj/api.php", openkjHandler.HandleAction)
 	mux.HandleFunc("POST /api/v1/openkj/api.php", openkjHandler.HandleAction)
@@ -335,23 +345,61 @@ func NewRouter(cfg config.Config, dependencies Dependencies) (http.Handler, erro
 	mux.HandleFunc("POST /api/openkj", openkjHandler.HandleAction)
 	mux.HandleFunc("GET /openkj/api.php", openkjHandler.HandleAction)
 	mux.HandleFunc("POST /openkj/api.php", openkjHandler.HandleAction)
+}
 
-	// API Keys (Host Personal Access Token management)
-	if developerHandler != nil {
-		mux.HandleFunc("POST /api/v1/api-keys", hostOnly(developerHandler.CreateKey))
-		mux.HandleFunc("GET /api/v1/api-keys", hostOnly(developerHandler.ListKeys))
-		mux.HandleFunc("DELETE /api/v1/api-keys/{id}", hostOnly(developerHandler.RevokeKey))
-	}
-
-	// Undocumented Reference Catalog & Source Archive API
-	referenceHandler := handlers.NewReferenceHandler(dependencies.ReferenceStore)
+func registerReferenceRoutes(mux *http.ServeMux, referenceStore reference.Store) {
+	referenceHandler := handlers.NewReferenceHandler(referenceStore)
 	mux.HandleFunc("GET /api/v1/reference/sources", referenceHandler.ListSources)
 	mux.HandleFunc("GET /api/v1/reference/sources/{id}", referenceHandler.GetSource)
 	mux.HandleFunc("GET /api/v1/reference/dictionary", referenceHandler.GetDictionary)
 	mux.HandleFunc("GET /api/v1/reference/discs", referenceHandler.GetDiscs)
 	mux.HandleFunc("GET /api/v1/reference/discs/{code}", referenceHandler.GetDiscByCode)
+}
 
-	return loggingMiddleware(corsMiddleware(mux, cfg.AllowedOrigins)), nil
+type routeGuards struct {
+	auth      *handlers.AuthHandler
+	developer *handlers.DeveloperHandler
+	songbook  *handlers.SongbookHandler
+	event     *handlers.EventHandler
+}
+
+func (g routeGuards) hostOnly(next http.HandlerFunc) http.HandlerFunc {
+	return g.auth.RequireAuth(g.auth.RequireHost(next))
+}
+
+func (g routeGuards) scopedHost(scope string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(strings.TrimSpace(r.Header.Get("Authorization")), "Bearer ")
+		if strings.HasPrefix(token, "mk_live_") && g.developer != nil {
+			developerNext := next
+			if scope != "" {
+				developerNext = g.developer.RequireScope(scope, next)
+			}
+			g.developer.RequireDeveloperKey(developerNext).ServeHTTP(w, r)
+			return
+		}
+		g.hostOnly(next).ServeHTTP(w, r)
+	}
+}
+
+func (g routeGuards) discoverBook(scope string, next http.HandlerFunc) http.HandlerFunc {
+	return g.scopedHost(scope, g.songbook.RequireAction(songbook.ActionDiscover, next))
+}
+
+func (g routeGuards) editCatalog(scope string, next http.HandlerFunc) http.HandlerFunc {
+	return g.scopedHost(scope, g.songbook.RequireAction(songbook.ActionEditCatalog, next))
+}
+
+func (g routeGuards) manageBook(scope string, next http.HandlerFunc) http.HandlerFunc {
+	return g.scopedHost(scope, g.songbook.RequireAction(songbook.ActionManageBook, next))
+}
+
+func (g routeGuards) manageAccess(next http.HandlerFunc) http.HandlerFunc {
+	return g.hostOnly(g.songbook.RequireAction(songbook.ActionManageAccess, next))
+}
+
+func (g routeGuards) ownedEvent(scope string, next http.HandlerFunc) http.HandlerFunc {
+	return g.scopedHost(scope, g.event.RequireOwnership(next))
 }
 
 func defaultInt(value, fallback int) int {

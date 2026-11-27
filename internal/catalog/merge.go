@@ -6,6 +6,158 @@ import (
 	"micup.live/server/internal/models"
 )
 
+const emptyMetaKey = "\x00\x00\x00\x00"
+
+type songMergeIndex struct {
+	result    []*models.Song
+	idIndex   map[string]int
+	metaIndex map[string]int
+	discIndex map[string][]int
+}
+
+func newSongMergeIndex(existing []*models.Song) *songMergeIndex {
+	result := make([]*models.Song, len(existing))
+	copy(result, existing)
+
+	idx := &songMergeIndex{
+		result:    result,
+		idIndex:   make(map[string]int, len(existing)),
+		metaIndex: make(map[string]int, len(existing)),
+		discIndex: make(map[string][]int, len(existing)),
+	}
+	for i, s := range existing {
+		idx.register(i, s)
+	}
+	return idx
+}
+
+func (m *songMergeIndex) register(idx int, s *models.Song) {
+	if s == nil {
+		return
+	}
+	if s.ID != "" {
+		m.idIndex[s.ID] = idx
+	}
+	if mk := songMetaKey(s); mk != emptyMetaKey {
+		m.metaIndex[mk] = idx
+	}
+	if dk := songDiscKey(s); dk != "" {
+		m.discIndex[dk] = append(m.discIndex[dk], idx)
+	}
+}
+
+func (m *songMergeIndex) merge(s *models.Song) {
+	if s == nil {
+		return
+	}
+	if m.matchByID(s) {
+		return
+	}
+	mk := songMetaKey(s)
+	if m.matchByMeta(mk, s) {
+		return
+	}
+	if m.matchByDisc(mk, s) {
+		return
+	}
+	idx := len(m.result)
+	m.result = append(m.result, s)
+	m.register(idx, s)
+}
+
+func (m *songMergeIndex) matchByID(s *models.Song) bool {
+	if s.ID == "" {
+		return false
+	}
+	idx, ok := m.idIndex[s.ID]
+	if !ok {
+		return false
+	}
+	m.result[idx] = preserveSongLocation(m.result[idx], s)
+	return true
+}
+
+func (m *songMergeIndex) matchByMeta(mk string, s *models.Song) bool {
+	if mk == emptyMetaKey {
+		return false
+	}
+	idx, ok := m.metaIndex[mk]
+	if !ok {
+		return false
+	}
+	m.result[idx] = preserveSongLocation(m.result[idx], s)
+	return true
+}
+
+func (m *songMergeIndex) matchByDisc(mk string, s *models.Song) bool {
+	dk := songDiscKey(s)
+	if dk == "" {
+		return false
+	}
+	incomingSource := strings.TrimSpace(s.Source)
+	matchedIdx := m.findDiscMatch(dk, incomingSource)
+	if matchedIdx < 0 {
+		return false
+	}
+	merged := preserveSongLocation(m.result[matchedIdx], s)
+	if incomingSource == "" && strings.TrimSpace(m.result[matchedIdx].Source) != "" {
+		cp := *merged
+		cp.Source = m.result[matchedIdx].Source
+		merged = &cp
+	}
+	m.result[matchedIdx] = merged
+	if mk != emptyMetaKey {
+		m.metaIndex[mk] = matchedIdx
+	}
+	return true
+}
+
+func (m *songMergeIndex) findDiscMatch(dk, incomingSource string) int {
+	for _, candidateIdx := range m.discIndex[dk] {
+		existingSource := strings.TrimSpace(m.result[candidateIdx].Source)
+		if existingSource == "" || incomingSource == "" {
+			return candidateIdx
+		}
+	}
+	return -1
+}
+
+func songMetaKey(s *models.Song) string {
+	if s == nil {
+		return ""
+	}
+	artist := strings.ToLower(strings.TrimSpace(s.Artist))
+	title := strings.ToLower(strings.TrimSpace(s.Title))
+	disc := strings.ToLower(strings.TrimSpace(s.Disc))
+	source := strings.ToLower(strings.TrimSpace(s.Source))
+	video := ""
+	if disc == "" && source == "" {
+		video = strings.TrimSpace(s.VideoURL)
+	}
+	return artist + "\x00" + title + "\x00" + disc + "\x00" + source + "\x00" + video
+}
+
+func songDiscKey(s *models.Song) string {
+	if s == nil {
+		return ""
+	}
+	disc := strings.ToLower(strings.TrimSpace(s.Disc))
+	if disc == "" {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(s.Artist)) + "\x00" +
+		strings.ToLower(strings.TrimSpace(s.Title)) + "\x00" + disc
+}
+
+func preserveSongLocation(existing, incoming *models.Song) *models.Song {
+	if strings.TrimSpace(incoming.Location) == "" && strings.TrimSpace(existing.Location) != "" {
+		cp := *incoming
+		cp.Location = existing.Location
+		return &cp
+	}
+	return incoming
+}
+
 // MergeSongs combines existing catalog songs with incoming manifest songs when pruneMissing is false.
 // Incoming songs update matching existing songs; unmatched existing songs are preserved, and new incoming songs are appended.
 func MergeSongs(existing []*models.Song, incoming []*models.Song) []*models.Song {
@@ -16,123 +168,9 @@ func MergeSongs(existing []*models.Song, incoming []*models.Song) []*models.Song
 		return existing
 	}
 
-	makeMetaKey := func(s *models.Song) string {
-		if s == nil {
-			return ""
-		}
-		artist := strings.ToLower(strings.TrimSpace(s.Artist))
-		title := strings.ToLower(strings.TrimSpace(s.Title))
-		disc := strings.ToLower(strings.TrimSpace(s.Disc))
-		source := strings.ToLower(strings.TrimSpace(s.Source))
-		video := ""
-		if disc == "" && source == "" {
-			video = strings.TrimSpace(s.VideoURL)
-		}
-		return artist + "\x00" + title + "\x00" + disc + "\x00" + source + "\x00" + video
-	}
-
-	makeDiscKey := func(s *models.Song) string {
-		if s == nil {
-			return ""
-		}
-		disc := strings.ToLower(strings.TrimSpace(s.Disc))
-		if disc == "" {
-			return ""
-		}
-		return strings.ToLower(strings.TrimSpace(s.Artist)) + "\x00" +
-			strings.ToLower(strings.TrimSpace(s.Title)) + "\x00" + disc
-	}
-
-	result := make([]*models.Song, len(existing))
-	copy(result, existing)
-
-	idIndex := make(map[string]int, len(existing))
-	metaIndex := make(map[string]int, len(existing))
-	discIndex := make(map[string][]int, len(existing))
-
-	for i, s := range existing {
-		if s == nil {
-			continue
-		}
-		if s.ID != "" {
-			idIndex[s.ID] = i
-		}
-		mk := makeMetaKey(s)
-		if mk != "\x00\x00\x00\x00" {
-			metaIndex[mk] = i
-		}
-		if dk := makeDiscKey(s); dk != "" {
-			discIndex[dk] = append(discIndex[dk], i)
-		}
-	}
-
-	preserveLocation := func(existing, incoming *models.Song) *models.Song {
-		if strings.TrimSpace(incoming.Location) == "" && strings.TrimSpace(existing.Location) != "" {
-			cp := *incoming
-			cp.Location = existing.Location
-			return &cp
-		}
-		return incoming
-	}
-
+	idx := newSongMergeIndex(existing)
 	for _, s := range incoming {
-		if s == nil {
-			continue
-		}
-		// Match by explicit song ID if present.
-		if s.ID != "" {
-			if idx, ok := idIndex[s.ID]; ok {
-				result[idx] = preserveLocation(result[idx], s)
-				continue
-			}
-		}
-		// Match by normalized (Artist, Title, Disc, Source[, VideoURL]).
-		mk := makeMetaKey(s)
-		if mk != "\x00\x00\x00\x00" {
-			if idx, ok := metaIndex[mk]; ok {
-				result[idx] = preserveLocation(result[idx], s)
-				continue
-			}
-		}
-		// Upgrade/match legacy disc-coded entries when one side lacks Source so
-		// additive re-imports enrich rather than duplicate existing tracks.
-		if dk := makeDiscKey(s); dk != "" {
-			incomingSource := strings.TrimSpace(s.Source)
-			matchedIdx := -1
-			for _, candidateIdx := range discIndex[dk] {
-				existingSource := strings.TrimSpace(result[candidateIdx].Source)
-				if existingSource == "" || incomingSource == "" {
-					matchedIdx = candidateIdx
-					break
-				}
-			}
-			if matchedIdx >= 0 {
-				merged := preserveLocation(result[matchedIdx], s)
-				if incomingSource == "" && strings.TrimSpace(result[matchedIdx].Source) != "" {
-					cp := *merged
-					cp.Source = result[matchedIdx].Source
-					merged = &cp
-				}
-				result[matchedIdx] = merged
-				if mk != "\x00\x00\x00\x00" {
-					metaIndex[mk] = matchedIdx
-				}
-				continue
-			}
-		}
-		// New song: append and register in lookup maps.
-		idx := len(result)
-		result = append(result, s)
-		if s.ID != "" {
-			idIndex[s.ID] = idx
-		}
-		if mk != "\x00\x00\x00\x00" {
-			metaIndex[mk] = idx
-		}
-		if dk := makeDiscKey(s); dk != "" {
-			discIndex[dk] = append(discIndex[dk], idx)
-		}
+		idx.merge(s)
 	}
-
-	return result
+	return idx.result
 }

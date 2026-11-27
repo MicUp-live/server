@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,7 +82,7 @@ func (h *ReferenceHandler) ListSources(w http.ResponseWriter, r *http.Request) {
 // GetSource handles GET /api/v1/reference/sources/{id}.
 func (h *ReferenceHandler) GetSource(w http.ResponseWriter, r *http.Request) {
 	rawID := strings.TrimSpace(r.PathValue("id"))
-	if rawID == "" || strings.Contains(rawID, "..") || strings.Contains(rawID, "/") {
+	if !isValidSourceID(rawID) {
 		writeAuthError(w, http.StatusBadRequest, "invalid reference source id")
 		return
 	}
@@ -104,31 +103,11 @@ func (h *ReferenceHandler) GetSource(w http.ResponseWriter, r *http.Request) {
 		format = strings.TrimPrefix(explicitExt, ".")
 	}
 
-	targetKey := src.RawKey
-	filename := src.RawFilename
-	if src.ID != "" && filename != "" {
-		if ext := filepath.Ext(filename); ext != "" && !strings.EqualFold(filename, src.ID+ext) {
-			filename = src.ID + ext
-		}
-	}
-	contentType := src.RawContentType
-	if format == "csv" && src.CSVKey != "" {
-		targetKey = src.CSVKey
-		filename = src.CSVFilename
-		contentType = "text/csv; charset=utf-8"
-	}
-
+	targetKey, filename, contentType := resolveSourceDownloadTarget(src, format)
 	if format == "json" {
-		enriched := enrichSourceEntry(src)
-		downloadURL := "/" + strings.TrimPrefix(targetKey, "/")
-		if h.Store != nil {
-			if presigned, err := h.Store.PresignGet(r.Context(), targetKey); err == nil && presigned != "" {
-				downloadURL = presigned
-			}
-		}
 		writeAuthJSON(w, http.StatusOK, map[string]any{
-			"source":       enriched,
-			"download_url": downloadURL,
+			"source":       enrichSourceEntry(src),
+			"download_url": h.resolveSourceDownloadURL(r.Context(), targetKey),
 		})
 		return
 	}
@@ -154,49 +133,7 @@ func (h *ReferenceHandler) GetDictionary(w http.ResponseWriter, r *http.Request)
 	}
 
 	limit := parseBoundedLimit(r.URL.Query().Get("limit"), 50, 500)
-	matches := make([]reference.CanonicalTrack, 0, limit)
-
-	// 1. Exact composite key match when both artist and title are provided.
-	if q == "" && artist != "" && title != "" {
-		key := reference.CompositeKey(artist, title)
-		if exact, ok := tracksMap[key]; ok {
-			matches = append(matches, exact)
-		}
-	}
-
-	// 2. Substring search across normalized artist/title when needed.
-	if len(matches) == 0 {
-		qLower := strings.ToLower(q)
-		artistLower := strings.ToLower(artist)
-		titleLower := strings.ToLower(title)
-
-		keys := make([]string, 0, len(tracksMap))
-		for k := range tracksMap {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-
-		for _, k := range keys {
-			t := tracksMap[k]
-			if qLower != "" {
-				if !strings.Contains(strings.ToLower(t.Artist), qLower) &&
-					!strings.Contains(strings.ToLower(t.Title), qLower) &&
-					!strings.Contains(k, qLower) {
-					continue
-				}
-			}
-			if artistLower != "" && !strings.Contains(strings.ToLower(t.Artist), artistLower) {
-				continue
-			}
-			if titleLower != "" && !strings.Contains(strings.ToLower(t.Title), titleLower) {
-				continue
-			}
-			matches = append(matches, t)
-			if len(matches) >= limit {
-				break
-			}
-		}
-	}
+	matches := searchDictionaryTracks(tracksMap, q, artist, title, limit)
 
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"tracks":       matches,
@@ -232,44 +169,7 @@ func (h *ReferenceHandler) GetDiscs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := parseBoundedLimit(r.URL.Query().Get("limit"), 50, 500)
-	qLower := strings.ToLower(q)
-	qNormDisc := strings.ToLower(reference.NormalizeDiscCode(q))
-	provLower := strings.ToLower(provider)
-
-	keys := make([]string, 0, len(discsMap))
-	for k := range discsMap {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	matches := make([]discRecord, 0, limit)
-	for _, code := range keys {
-		t := discsMap[code]
-		if provLower != "" && !strings.EqualFold(t.Source, provider) && !strings.Contains(strings.ToLower(t.Source), provLower) {
-			continue
-		}
-		if qLower != "" {
-			codeLower := strings.ToLower(code)
-			if !strings.Contains(codeLower, qLower) &&
-				(qNormDisc == "" || !strings.Contains(codeLower, qNormDisc)) &&
-				!strings.Contains(strings.ToLower(t.Artist), qLower) &&
-				!strings.Contains(strings.ToLower(t.Title), qLower) {
-				continue
-			}
-		}
-		matches = append(matches, discRecord{
-			Disc:        code,
-			CanonicalID: t.ID,
-			Artist:      t.Artist,
-			Title:       t.Title,
-			Provider:    t.Source,
-			Genre:       t.Genre,
-			Year:        t.Year,
-		})
-		if len(matches) >= limit {
-			break
-		}
-	}
+	matches := searchDiscRecords(discsMap, q, provider, limit)
 
 	writeAuthJSON(w, http.StatusOK, map[string]any{
 		"discs":       matches,

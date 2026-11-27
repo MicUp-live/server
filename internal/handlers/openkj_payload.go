@@ -56,48 +56,64 @@ func openKJRequestID(id string) int {
 
 // putOpenKJSongs writes OpenKJ songs into the catalog-changes overlay with bounded concurrency.
 func putOpenKJSongs(ctx context.Context, changes store.CatalogChangeStore, songbookID string, rawSongs []OpenKJSong) (int, error) {
-	now := time.Now().UTC()
-	pending := make([]*models.CatalogChange, 0, len(rawSongs))
-	for _, item := range rawSongs {
-		artist := strings.TrimSpace(item.Artist)
-		title := strings.TrimSpace(item.Title)
-		if artist == "" && title == "" {
-			continue
-		}
-		disc := strings.TrimSpace(item.Disc)
-		if disc == "" {
-			disc = strings.TrimSpace(item.SongID)
-		}
-
-		hasher := sha256.New()
-		hasher.Write([]byte(fmt.Sprintf("%s:%s:%s", strings.ToLower(artist), strings.ToLower(title), strings.ToLower(disc))))
-		fp := "okj-" + hex.EncodeToString(hasher.Sum(nil))[:16]
-
-		label := models.BuildLabel(artist, title)
-		searchText := models.BuildSearchText(artist, title, disc, label, "")
-		song := &models.Song{
-			ID:          fp,
-			SongbookID:  songbookID,
-			Artist:      artist,
-			Title:       title,
-			Disc:        disc,
-			Label:       label,
-			SearchText:  searchText,
-			Fingerprint: fp,
-			IsAvailable: true,
-			CreatedAt:   now,
-			UpdatedAt:   now,
-		}
-		pending = append(pending, &models.CatalogChange{
-			SongbookID: songbookID,
-			SongID:     song.ID,
-			Song:       song,
-		})
-	}
+	pending := buildOpenKJPendingChanges(songbookID, rawSongs, time.Now().UTC())
 	if len(pending) == 0 {
 		return 0, nil
 	}
+	if err := writeOpenKJCatalogChanges(ctx, changes, pending); err != nil {
+		return 0, err
+	}
+	return len(pending), nil
+}
 
+func buildOpenKJPendingChanges(songbookID string, rawSongs []OpenKJSong, now time.Time) []*models.CatalogChange {
+	pending := make([]*models.CatalogChange, 0, len(rawSongs))
+	for _, item := range rawSongs {
+		if ch := buildOpenKJCatalogChange(songbookID, item, now); ch != nil {
+			pending = append(pending, ch)
+		}
+	}
+	return pending
+}
+
+func buildOpenKJCatalogChange(songbookID string, item OpenKJSong, now time.Time) *models.CatalogChange {
+	artist := strings.TrimSpace(item.Artist)
+	title := strings.TrimSpace(item.Title)
+	if artist == "" && title == "" {
+		return nil
+	}
+	disc := strings.TrimSpace(item.Disc)
+	if disc == "" {
+		disc = strings.TrimSpace(item.SongID)
+	}
+
+	hasher := sha256.New()
+	hasher.Write([]byte(fmt.Sprintf("%s:%s:%s", strings.ToLower(artist), strings.ToLower(title), strings.ToLower(disc))))
+	fp := "okj-" + hex.EncodeToString(hasher.Sum(nil))[:16]
+
+	label := models.BuildLabel(artist, title)
+	searchText := models.BuildSearchText(artist, title, disc, label, "")
+	song := &models.Song{
+		ID:          fp,
+		SongbookID:  songbookID,
+		Artist:      artist,
+		Title:       title,
+		Disc:        disc,
+		Label:       label,
+		SearchText:  searchText,
+		Fingerprint: fp,
+		IsAvailable: true,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	return &models.CatalogChange{
+		SongbookID: songbookID,
+		SongID:     song.ID,
+		Song:       song,
+	}
+}
+
+func writeOpenKJCatalogChanges(ctx context.Context, changes store.CatalogChangeStore, pending []*models.CatalogChange) error {
 	const maxConcurrency = 16
 	workers := maxConcurrency
 	if len(pending) < workers {
@@ -122,25 +138,28 @@ func putOpenKJSongs(ctx context.Context, changes store.CatalogChangeStore, songb
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			for ch := range jobs {
-				if workCtx.Err() != nil {
-					return
-				}
-				if err := changes.PutCatalogChange(workCtx, ch); err != nil {
-					errOnce.Do(func() {
-						firstErr = err
-						cancel()
-					})
-					return
-				}
-			}
+			drainOpenKJCatalogJobs(workCtx, changes, jobs, func(err error) {
+				errOnce.Do(func() {
+					firstErr = err
+					cancel()
+				})
+			})
 		}()
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return 0, firstErr
+	return firstErr
+}
+
+func drainOpenKJCatalogJobs(ctx context.Context, changes store.CatalogChangeStore, jobs <-chan *models.CatalogChange, onErr func(error)) {
+	for ch := range jobs {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := changes.PutCatalogChange(ctx, ch); err != nil {
+			onErr(err)
+			return
+		}
 	}
-	return len(pending), nil
 }
 
 type openkjPayloadKey struct{}

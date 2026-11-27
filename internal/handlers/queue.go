@@ -502,61 +502,22 @@ func parseIdempotencyKey(r *http.Request) (string, error) {
 }
 
 func normalizeRequestUpdate(update *models.RequestUpdate) error {
-	if update.Status != nil {
-		status := *update.Status
-		switch status {
-		case models.StatusPending, models.StatusAccepted, models.StatusUpNext, models.StatusCompleted, models.StatusRejected, models.StatusCancelled:
-		case "playing":
-			status = models.StatusUpNext
-		case "declined":
-			status = models.StatusRejected
-		default:
-			return errors.New("invalid status")
-		}
-		update.Status = &status
+	if err := normalizeUpdateStatus(&update.Status); err != nil {
+		return err
 	}
-	if update.SongTitle != nil {
-		trimmed := strings.TrimSpace(*update.SongTitle)
-		if trimmed == "" {
-			return errors.New("song_title cannot be empty")
-		}
-		update.SongTitle = &trimmed
+	if err := trimRequiredString(&update.SongTitle, "song_title cannot be empty"); err != nil {
+		return err
 	}
-	if update.SongArtist != nil {
-		trimmed := strings.TrimSpace(*update.SongArtist)
-		if trimmed == "" {
-			return errors.New("song_artist cannot be empty")
-		}
-		update.SongArtist = &trimmed
+	if err := trimRequiredString(&update.SongArtist, "song_artist cannot be empty"); err != nil {
+		return err
 	}
-	if update.SingerName != nil {
-		trimmed := strings.TrimSpace(*update.SingerName)
-		if trimmed == "" {
-			return errors.New("singer_name cannot be empty")
-		}
-		update.SingerName = &trimmed
+	if err := trimRequiredString(&update.SingerName, "singer_name cannot be empty"); err != nil {
+		return err
 	}
-	if update.SongID != nil {
-		trimmed := strings.TrimSpace(*update.SongID)
-		update.SongID = &trimmed
-	}
-	if update.KeyChange != nil {
-		keyChange := *update.KeyChange
-		if keyChange < -6 {
-			keyChange = -6
-		} else if keyChange > 6 {
-			keyChange = 6
-		}
-		update.KeyChange = &keyChange
-	}
-	if update.Notes != nil {
-		trimmed := strings.TrimSpace(*update.Notes)
-		update.Notes = &trimmed
-	}
-	if update.DeclineReason != nil {
-		trimmed := strings.TrimSpace(*update.DeclineReason)
-		update.DeclineReason = &trimmed
-	}
+	trimOptionalString(&update.SongID)
+	clampKeyChange(&update.KeyChange)
+	trimOptionalString(&update.Notes)
+	trimOptionalString(&update.DeclineReason)
 	return nil
 }
 

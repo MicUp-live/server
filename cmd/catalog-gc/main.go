@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -222,160 +221,28 @@ func executeGC(ctx context.Context, s gcStore, s3c s3Client, bucket string, dryR
 		return fmt.Errorf("list import jobs: %w", err)
 	}
 
-	cutoff := time.Now().UTC().Add(-grace)
-
-	refs := map[string]bool{}
-	for _, b := range books {
-		if b.CatalogVersionID != "" {
-			refs[b.CatalogVersionID] = true
-		}
+	target := gcTarget{
+		store:  s,
+		s3c:    s3c,
+		bucket: bucket,
+		dryRun: dryRun,
+		cutoff: time.Now().UTC().Add(-grace),
+		grace:  grace,
 	}
 
-	unrefCount := 0
-	if len(books) == 0 && len(versions) > 0 {
-		log.Printf("[GC SAFETY WARNING] 0 songbooks found but %d catalog versions exist; skipping unreferenced catalog pruning to avoid accidental data loss", len(versions))
-	} else {
-		now := time.Now().UTC()
-		for _, v := range versions {
-			if refs[v.ID] || v.Status == models.CatalogVersionBuilding {
-				continue
-			}
-			if v.Status == models.CatalogVersionReady && v.CreatedAt.After(cutoff) {
-				continue
-			}
-			if v.Status == models.CatalogVersionDeleting && v.LeaseExpiresAt.After(now) {
-				continue
-			}
-			prefix := strings.Trim(v.AssetPrefix, "/")
-			if prefix == "" {
-				continue
-			}
-			unrefCount++
-			log.Printf("candidate unreferenced catalog=%s status=%s prefix=%s", v.ID, v.Status, prefix)
-			if !dryRun {
-				err := s.PurgeCatalogVersion(ctx, v.ID, func(assetPrefix string) error {
-					return deletePrefix(ctx, s3c, bucket, assetPrefix)
-				})
-				if err != nil {
-					if errors.Is(err, store.ErrCatalogVersionInUse) {
-						log.Printf("candidate catalog=%s is in use, skipped deletion", v.ID)
-						continue
-					}
-					log.Printf("purge catalog %s: %v", v.ID, err)
-					continue
-				}
-			}
-		}
-	}
-
-	// Inventory S3 directly as well: an interrupted publish or a deleted
-	// metadata record can leave a complete catalog prefix with no DynamoDB row.
-	known := map[string]bool{}
-	for _, v := range versions {
-		known[strings.Trim(v.AssetPrefix, "/")] = true
-	}
-	prefixes, err := listCatalogPrefixes(ctx, s3c, bucket)
+	unrefCount := target.pruneUnreferencedCatalogs(ctx, books, versions)
+	orphanPrefixCount, err := target.pruneOrphanPrefixes(ctx, versions)
 	if err != nil {
-		return fmt.Errorf("list catalog prefixes: %w", err)
+		return err
 	}
-
-	orphanPrefixCount := 0
-	for _, prefix := range prefixes {
-		if known[prefix] {
-			continue
-		}
-		withinGrace, err := isPrefixWithinGrace(ctx, s3c, bucket, prefix, cutoff)
-		if err != nil {
-			log.Printf("[GC WARN] check grace for prefix %s: %v; skipping", prefix, err)
-			continue
-		}
-		if withinGrace {
-			log.Printf("orphan catalog prefix %s is within grace period (%v); skipping", prefix, grace)
-			continue
-		}
-		orphanPrefixCount++
-		log.Printf("candidate orphan catalog prefix=%s", prefix)
-		if !dryRun {
-			err := s.PurgeOrphanCatalogPrefix(ctx, prefix, func(assetPrefix string) error {
-				return deletePrefix(ctx, s3c, bucket, assetPrefix)
-			})
-			if err != nil {
-				if errors.Is(err, store.ErrCatalogDeletionConflict) || errors.Is(err, store.ErrCatalogVersionInUse) {
-					log.Printf("orphan catalog prefix %s is active or referenced, skipped deletion: %v", prefix, err)
-					continue
-				}
-				log.Printf("delete orphan assets %s: %v", prefix, err)
-			}
-		}
-	}
-
-	activeImports := map[string]bool{}
-	for _, job := range jobs {
-		if job.Status == models.ImportJobQueued || job.Status == models.ImportJobProcessing {
-			activeImports[job.ManifestKey] = true
-		}
-	}
-	objects, err := listObjects(ctx, s3c, bucket, "imports/")
+	orphanImportCount, err := target.pruneOrphanImports(ctx, jobs)
 	if err != nil {
-		return fmt.Errorf("list imports objects: %w", err)
+		return err
 	}
-
-	orphanImportCount := 0
-	for _, object := range objects {
-		if activeImports[object.Key] {
-			continue
-		}
-		if object.LastModified.After(cutoff) {
-			log.Printf("orphan import %s is within grace period (%v); skipping", object.Key, grace)
-			continue
-		}
-		orphanImportCount++
-		log.Printf("candidate orphan import=%s", object.Key)
-		if !dryRun {
-			if err := deleteObject(ctx, s3c, bucket, object.Key); err != nil {
-				log.Printf("delete orphan import %s: %v", object.Key, err)
-			}
-		}
-	}
-
-	staleJobCount := 0
-	for _, job := range jobs {
-		if (job.Status == models.ImportJobQueued || job.Status == models.ImportJobProcessing) || job.UpdatedAt.After(cutoff) {
-			continue
-		}
-		staleJobCount++
-		log.Printf("candidate stale import job=%s status=%s manifest=%s", job.ID, job.Status, job.ManifestKey)
-		if !dryRun {
-			if err := s.DeleteImportJob(ctx, job.ID); err != nil {
-				log.Printf("delete stale import job %s: %v", job.ID, err)
-			}
-		}
-	}
-
-	orphanPrivateCount := 0
-	if !(len(books) == 0 && len(versions) > 0) {
-		activePrivateLocations := map[string]bool{}
-		for _, book := range books {
-			if book != nil && book.ID != "" && book.CatalogVersionID != "" {
-				activePrivateLocations["private/songbooks/"+book.ID+"/"+book.CatalogVersionID+"/locations.json.gz"] = true
-			}
-		}
-		privObjs, err := listObjects(ctx, s3c, bucket, "private/songbooks/")
-		if err != nil {
-			return fmt.Errorf("list private songbook objects: %w", err)
-		}
-		for _, object := range privObjs {
-			if activePrivateLocations[object.Key] || object.LastModified.After(cutoff) {
-				continue
-			}
-			orphanPrivateCount++
-			log.Printf("candidate orphan private=%s", object.Key)
-			if !dryRun {
-				if err := deleteObject(ctx, s3c, bucket, object.Key); err != nil {
-					log.Printf("delete orphan private object %s: %v", object.Key, err)
-				}
-			}
-		}
+	staleJobCount := target.pruneStaleImportJobs(ctx, jobs)
+	orphanPrivateCount, err := target.pruneOrphanPrivateObjects(ctx, books, versions)
+	if err != nil {
+		return err
 	}
 
 	log.Printf("catalog-gc completed (dryRun=%v, grace=%v): %d unreferenced catalogs, %d orphan prefixes, %d orphan imports, %d stale import jobs, %d orphan private objects",

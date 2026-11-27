@@ -111,103 +111,157 @@ func (s *Service) ExportData(ctx context.Context, user *models.User) (*UserDataE
 	populateFavorites(ctx, export, user, s.Auth)
 
 	// 1. Export Passkeys Metadata
-	if s.Passkeys != nil {
-		creds, err := s.Passkeys.ListPasskeyCredentialsForUser(ctx, user.ID)
-		if err != nil {
-			return nil, &ExportError{
-				Section: "passkeys",
-				Message: "failed to export passkeys",
-				Err:     err,
-			}
-		}
-		for _, cred := range creds {
-			export.Passkeys = append(export.Passkeys, PasskeyExportItem{
-				ID:           cred.ID,
-				FriendlyName: cred.FriendlyName,
-				CreatedAt:    cred.CreatedAt,
-				LastUsedAt:   cred.LastUsedAt,
-			})
-		}
+	passkeys, err := s.exportPasskeys(ctx, user.ID)
+	if err != nil {
+		return nil, err
 	}
+	export.Passkeys = passkeys
 
 	// 2. Export Songbooks & Catalog
-	if s.Songbooks != nil {
-		books, err := s.Songbooks.ListSongbooksByOwner(ctx, user.ID)
-		if err != nil {
-			return nil, &ExportError{
-				Section: "songbooks",
-				Message: "failed to export songbooks",
-				Err:     err,
-			}
-		}
-		for _, book := range books {
-			item := SongbookExportItem{
-				Songbook: book,
-			}
-
-			var changes []*models.CatalogChange
-			if s.CatalogChanges != nil {
-				var ccErr error
-				changes, ccErr = s.CatalogChanges.ListCatalogChanges(ctx, book.ID)
-				if ccErr != nil {
-					return nil, &ExportError{
-						Section: "catalog_changes",
-						Message: fmt.Sprintf("failed to export catalog changes for songbook %s", book.ID),
-						Err:     ccErr,
-					}
-				}
-				item.PendingChanges = changes
-			}
-
-			if book.CatalogVersionID != "" && s.Catalogs != nil {
-				version, versionErr := s.Catalogs.GetCatalogVersion(ctx, book.CatalogVersionID)
-				if versionErr != nil {
-					return nil, &ExportError{
-						Section: "catalog_versions",
-						Message: fmt.Sprintf("failed to export catalog version %s", book.CatalogVersionID),
-						Err:     versionErr,
-					}
-				}
-				if version.Status == models.CatalogVersionReady {
-					item.CatalogVersion = version.ID
-					prefix := strings.Trim(version.AssetPrefix, "/")
-					item.CatalogURL = "/" + prefix + "/search.json.gz"
-					item.ManifestURL = "/" + prefix + "/manifest.json"
-					item.SongCount = version.SongCount
-				}
-			}
-
-			if item.CatalogURL == "" {
-				var songs []*models.Song
-				if len(changes) > 0 {
-					byID := models.ApplyCatalogChanges(nil, changes)
-					songs = make([]*models.Song, 0, len(byID))
-					for _, song := range byID {
-						songs = append(songs, song)
-					}
-				}
-				item.Songs = songs
-				item.SongCount = len(songs)
-			}
-
-			export.Songbooks = append(export.Songbooks, item)
-		}
+	songbooks, err := s.exportSongbooks(ctx, user.ID)
+	if err != nil {
+		return nil, err
 	}
+	export.Songbooks = songbooks
 
 	// 3. Export Events
-	if s.Events != nil {
-		events, err := s.Events.ListEventsByOwner(ctx, user.ID)
-		if err != nil {
-			return nil, &ExportError{
-				Section: "events",
-				Message: "failed to export events",
-				Err:     err,
-			}
-		}
-		export.Events = events
+	events, err := s.exportEvents(ctx, user.ID)
+	if err != nil {
+		return nil, err
 	}
+	export.Events = events
 
 	return export, nil
+}
+
+func (s *Service) exportPasskeys(ctx context.Context, userID string) ([]PasskeyExportItem, error) {
+	if s.Passkeys == nil {
+		return nil, nil
+	}
+	creds, err := s.Passkeys.ListPasskeyCredentialsForUser(ctx, userID)
+	if err != nil {
+		return nil, &ExportError{
+			Section: "passkeys",
+			Message: "failed to export passkeys",
+			Err:     err,
+		}
+	}
+	items := make([]PasskeyExportItem, 0, len(creds))
+	for _, cred := range creds {
+		items = append(items, PasskeyExportItem{
+			ID:           cred.ID,
+			FriendlyName: cred.FriendlyName,
+			CreatedAt:    cred.CreatedAt,
+			LastUsedAt:   cred.LastUsedAt,
+		})
+	}
+	return items, nil
+}
+
+func (s *Service) exportSongbooks(ctx context.Context, userID string) ([]SongbookExportItem, error) {
+	if s.Songbooks == nil {
+		return nil, nil
+	}
+	books, err := s.Songbooks.ListSongbooksByOwner(ctx, userID)
+	if err != nil {
+		return nil, &ExportError{
+			Section: "songbooks",
+			Message: "failed to export songbooks",
+			Err:     err,
+		}
+	}
+	items := make([]SongbookExportItem, 0, len(books))
+	for _, book := range books {
+		item, err := s.exportSongbookItem(ctx, book)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+func (s *Service) exportSongbookItem(ctx context.Context, book *models.Songbook) (SongbookExportItem, error) {
+	item := SongbookExportItem{Songbook: book}
+
+	changes, err := s.exportBookCatalogChanges(ctx, book.ID)
+	if err != nil {
+		return SongbookExportItem{}, err
+	}
+	item.PendingChanges = changes
+
+	if err := s.applyCatalogVersionToExport(ctx, &item, book.CatalogVersionID); err != nil {
+		return SongbookExportItem{}, err
+	}
+	if item.CatalogURL == "" {
+		populateFallbackSongs(&item, changes)
+	}
+	return item, nil
+}
+
+func (s *Service) exportBookCatalogChanges(ctx context.Context, bookID string) ([]*models.CatalogChange, error) {
+	if s.CatalogChanges == nil {
+		return nil, nil
+	}
+	changes, err := s.CatalogChanges.ListCatalogChanges(ctx, bookID)
+	if err != nil {
+		return nil, &ExportError{
+			Section: "catalog_changes",
+			Message: fmt.Sprintf("failed to export catalog changes for songbook %s", bookID),
+			Err:     err,
+		}
+	}
+	return changes, nil
+}
+
+func (s *Service) applyCatalogVersionToExport(ctx context.Context, item *SongbookExportItem, versionID string) error {
+	if versionID == "" || s.Catalogs == nil {
+		return nil
+	}
+	version, err := s.Catalogs.GetCatalogVersion(ctx, versionID)
+	if err != nil {
+		return &ExportError{
+			Section: "catalog_versions",
+			Message: fmt.Sprintf("failed to export catalog version %s", versionID),
+			Err:     err,
+		}
+	}
+	if version.Status == models.CatalogVersionReady {
+		item.CatalogVersion = version.ID
+		prefix := strings.Trim(version.AssetPrefix, "/")
+		item.CatalogURL = "/" + prefix + "/search.json.gz"
+		item.ManifestURL = "/" + prefix + "/manifest.json"
+		item.SongCount = version.SongCount
+	}
+	return nil
+}
+
+func populateFallbackSongs(item *SongbookExportItem, changes []*models.CatalogChange) {
+	var songs []*models.Song
+	if len(changes) > 0 {
+		byID := models.ApplyCatalogChanges(nil, changes)
+		songs = make([]*models.Song, 0, len(byID))
+		for _, song := range byID {
+			songs = append(songs, song)
+		}
+	}
+	item.Songs = songs
+	item.SongCount = len(songs)
+}
+
+func (s *Service) exportEvents(ctx context.Context, userID string) ([]*models.Event, error) {
+	if s.Events == nil {
+		return nil, nil
+	}
+	events, err := s.Events.ListEventsByOwner(ctx, userID)
+	if err != nil {
+		return nil, &ExportError{
+			Section: "events",
+			Message: "failed to export events",
+			Err:     err,
+		}
+	}
+	return events, nil
 }
 
 func (s *Service) failCascade(ctx context.Context, userID, step, msg string, err error, _ []string) error {
@@ -228,58 +282,25 @@ func (s *Service) DeleteAccount(ctx context.Context, user *models.User) error {
 	catalogVersionsToPurge := mergeCatalogVersionIDs(user.PendingCatalogVersions, nil)
 
 	// 0. Durably mark account as deleting and rotate auth_epoch before revoking credentials.
-	if s.Auth != nil {
-		updated, err := s.Auth.BeginAccountDeletion(ctx, user.ID, catalogVersionsToPurge)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			log.Printf("[PRIVACY ERROR] Failed marking user %s for deletion: %v", user.ID, err)
-			return &CascadeError{Step: "begin_deletion", Message: "failed to mark account for deletion", Err: err}
-		}
-		if updated != nil {
-			user.Deleting = updated.Deleting
-			user.DeletionEpoch = updated.DeletionEpoch
-			user.DeletionStartedAt = updated.DeletionStartedAt
-			user.AuthEpoch = updated.AuthEpoch
-			catalogVersionsToPurge = mergeCatalogVersionIDs(catalogVersionsToPurge, updated.PendingCatalogVersions)
-			user.PendingCatalogVersions = catalogVersionsToPurge
-		}
+	var err error
+	catalogVersionsToPurge, err = s.beginAccountDeletion(ctx, user, catalogVersionsToPurge)
+	if err != nil {
+		return err
 	}
 
 	// 1. Revoke and delete all active auth sessions
-	if s.Auth != nil {
-		if err := s.Auth.DeleteAuthSessionsForUser(ctx, user.ID); err != nil {
-			log.Printf("[PRIVACY ERROR] Failed deleting sessions for user %s: %v", user.ID, err)
-			return s.failCascade(ctx, user.ID, "auth_sessions", "failed to delete sessions", err, catalogVersionsToPurge)
-		}
+	if err := s.deleteAuthSessions(ctx, user.ID, catalogVersionsToPurge); err != nil {
+		return err
 	}
 
 	// 2. Delete all passkey credentials
-	if s.Passkeys != nil {
-		creds, err := s.Passkeys.ListPasskeyCredentialsForUser(ctx, user.ID)
-		if err != nil {
-			log.Printf("[PRIVACY ERROR] Failed listing passkeys for user %s: %v", user.ID, err)
-			return s.failCascade(ctx, user.ID, "list_passkeys", "failed to list passkeys", err, catalogVersionsToPurge)
-		}
-		for _, cred := range creds {
-			if err := s.Passkeys.DeletePasskeyCredential(ctx, cred.ID, user.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Printf("[PRIVACY ERROR] Failed deleting passkey %s for user %s: %v", cred.ID, user.ID, err)
-				return s.failCascade(ctx, user.ID, "delete_passkeys", "failed to delete passkey credentials", err, catalogVersionsToPurge)
-			}
-		}
+	if err := s.deleteUserPasskeys(ctx, user.ID, catalogVersionsToPurge); err != nil {
+		return err
 	}
 
 	// 3. Revoke and delete all developer API keys
-	if s.DeveloperKeys != nil {
-		keys, err := s.DeveloperKeys.ListDeveloperKeys(ctx, user.ID)
-		if err != nil {
-			log.Printf("[PRIVACY ERROR] Failed listing developer keys for user %s: %v", user.ID, err)
-			return s.failCascade(ctx, user.ID, "list_developer_keys", "failed to list developer keys", err, catalogVersionsToPurge)
-		}
-		for _, key := range keys {
-			if err := s.DeveloperKeys.RevokeDeveloperKey(ctx, key.ID, user.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Printf("[PRIVACY ERROR] Failed revoking developer key %s for user %s: %v", key.ID, user.ID, err)
-				return s.failCascade(ctx, user.ID, "delete_developer_keys", "failed to delete developer keys", err, catalogVersionsToPurge)
-			}
-		}
+	if err := s.deleteUserDeveloperKeys(ctx, user.ID, catalogVersionsToPurge); err != nil {
+		return err
 	}
 
 	// 3b. Remove collaborator grants held by this user (leaves shared songbooks intact)
@@ -288,201 +309,24 @@ func (s *Service) DeleteAccount(ctx context.Context, user *models.User) error {
 	}
 
 	// 4. Delete owned events and singer request PII
-	if s.Events != nil {
-		events, err := s.Events.ListEventsByOwner(ctx, user.ID)
-		if err != nil {
-			log.Printf("[PRIVACY ERROR] Failed listing events for user %s: %v", user.ID, err)
-			return s.failCascade(ctx, user.ID, "list_events", "failed to list events", err, catalogVersionsToPurge)
-		}
-		for _, ev := range events {
-			if err := s.Events.BeginEventDeletion(ctx, ev.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Printf("[PRIVACY ERROR] Failed setting deletion barrier on event %s: %v", ev.ID, err)
-				return s.failCascade(ctx, user.ID, "begin_event_deletion", "failed to begin event deletion", err, catalogVersionsToPurge)
-			}
-			if s.Requests != nil {
-				reqs, err := s.Requests.ListRequestsByEvent(ctx, ev.ID)
-				if err != nil {
-					log.Printf("[PRIVACY ERROR] Failed listing requests for event %s: %v", ev.ID, err)
-					return s.failCascade(ctx, user.ID, "list_requests", "failed to list event requests", err, catalogVersionsToPurge)
-				}
-				for _, rq := range reqs {
-					if err := s.Requests.DeleteRequest(ctx, rq.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-						log.Printf("[PRIVACY ERROR] Failed deleting request %s: %v", rq.ID, err)
-						return s.failCascade(ctx, user.ID, "delete_requests", "failed to delete event requests", err, catalogVersionsToPurge)
-					}
-				}
-			}
-			if err := s.Events.DeleteEvent(ctx, ev.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Printf("[PRIVACY ERROR] Failed deleting event %s: %v", ev.ID, err)
-				return s.failCascade(ctx, user.ID, "delete_events", "failed to delete events", err, catalogVersionsToPurge)
-			}
-		}
+	if err := s.deleteUserEvents(ctx, user.ID, catalogVersionsToPurge); err != nil {
+		return err
 	}
 
 	// 5. Delete owned songbooks, catalog changes, import jobs, and S3 assets
-	if s.Songbooks != nil {
-		books, err := s.Songbooks.ListSongbooksByOwner(ctx, user.ID)
-		if err != nil {
-			log.Printf("[PRIVACY ERROR] Failed listing songbooks for user %s: %v", user.ID, err)
-			return s.failCascade(ctx, user.ID, "list_songbooks", "failed to list songbooks", err, catalogVersionsToPurge)
-		}
-
-		for _, book := range books {
-			frozenBook, err := s.Songbooks.BeginSongbookDeletion(ctx, book.ID)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					continue
-				}
-				log.Printf("[PRIVACY ERROR] Failed setting deletion barrier on songbook %s: %v", book.ID, err)
-				return s.failCascade(ctx, user.ID, "begin_songbook_deletion", "failed to begin songbook deletion", err, catalogVersionsToPurge)
-			}
-			if frozenBook == nil {
-				err := fmt.Errorf("songbook %s deletion barrier returned nil frozen state", book.ID)
-				log.Printf("[PRIVACY ERROR] Failed setting deletion barrier on songbook %s: %v", book.ID, err)
-				return s.failCascade(ctx, user.ID, "begin_songbook_deletion", "failed to begin songbook deletion", err, catalogVersionsToPurge)
-			}
-			targetBook := frozenBook
-			if err := s.cleanupOwnedSongbookCollaboration(ctx, targetBook); err != nil {
-				return s.failCascade(ctx, user.ID, "cleanup_songbook_collaboration", "failed to clean up songbook collaboration", err, catalogVersionsToPurge)
-			}
-
-			// Capture authoritative catalog pointer from the frozen state after the barrier
-			if targetBook.CatalogVersionID != "" {
-				newVersions := mergeCatalogVersionIDs(catalogVersionsToPurge, []string{targetBook.CatalogVersionID})
-				if len(newVersions) > len(catalogVersionsToPurge) {
-					catalogVersionsToPurge = newVersions
-					user.PendingCatalogVersions = catalogVersionsToPurge
-
-					// Persist discovered catalog version before deleting the songbook or its children
-					if s.Auth != nil {
-						updated, err := s.Auth.BeginAccountDeletion(ctx, user.ID, catalogVersionsToPurge)
-						if err != nil && !errors.Is(err, os.ErrNotExist) {
-							log.Printf("[PRIVACY ERROR] Failed recording pending catalog versions for user %s: %v", user.ID, err)
-							return s.failCascade(ctx, user.ID, "record_catalog_versions", "failed to record pending catalog versions", err, catalogVersionsToPurge)
-						}
-						if updated != nil {
-							catalogVersionsToPurge = mergeCatalogVersionIDs(catalogVersionsToPurge, updated.PendingCatalogVersions)
-							user.PendingCatalogVersions = catalogVersionsToPurge
-						}
-					}
-				}
-			}
-			// A. Delete pending catalog changes
-			if s.CatalogChanges != nil {
-				changes, err := s.CatalogChanges.ListCatalogChanges(ctx, book.ID)
-				if err != nil {
-					log.Printf("[PRIVACY ERROR] Failed listing catalog changes for songbook %s: %v", book.ID, err)
-					return s.failCascade(ctx, user.ID, "list_catalog_changes", "failed to list catalog changes", err, catalogVersionsToPurge)
-				}
-				for _, change := range changes {
-					if err := s.CatalogChanges.DeleteCatalogChange(ctx, book.ID, change.SongID, time.Time{}); err != nil && !errors.Is(err, os.ErrNotExist) {
-						log.Printf("[PRIVACY ERROR] Failed deleting catalog change for songbook %s song %s: %v", book.ID, change.SongID, err)
-						return s.failCascade(ctx, user.ID, "delete_catalog_changes", "failed to delete catalog changes", err, catalogVersionsToPurge)
-					}
-				}
-			}
-
-			// B. Delete import jobs and uploaded manifests
-			if s.ImportJobs != nil {
-				jobs, err := s.ImportJobs.ListImportJobs(ctx)
-				if err != nil {
-					log.Printf("[PRIVACY ERROR] Failed listing import jobs: %v", err)
-					return s.failCascade(ctx, user.ID, "list_import_jobs", "failed to list import jobs", err, catalogVersionsToPurge)
-				}
-				for _, job := range jobs {
-					if job.SongbookID == book.ID {
-						if job.ManifestKey != "" && s.Assets != nil {
-							if err := s.Assets.DeleteKey(ctx, job.ManifestKey); err != nil && !errors.Is(err, os.ErrNotExist) {
-								log.Printf("[PRIVACY ERROR] Failed deleting import manifest key %s: %v", job.ManifestKey, err)
-								return s.failCascade(ctx, user.ID, "delete_import_assets", "failed to delete import manifest assets", err, catalogVersionsToPurge)
-							}
-						}
-						if err := s.ImportJobs.DeleteImportJob(ctx, job.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-							log.Printf("[PRIVACY ERROR] Failed deleting import job %s: %v", job.ID, err)
-							return s.failCascade(ctx, user.ID, "delete_import_jobs", "failed to delete import jobs", err, catalogVersionsToPurge)
-						}
-					}
-				}
-			}
-
-			// C. Durably delete songbook (and all songs in DynamoDB) BEFORE purging catalog assets
-			if err := s.Songbooks.DeleteSongbook(ctx, book.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				log.Printf("[PRIVACY ERROR] Failed deleting songbook %s: %v", book.ID, err)
-				return s.failCascade(ctx, user.ID, "delete_songbooks", "failed to delete songbooks", err, catalogVersionsToPurge)
-			}
-		}
+	catalogVersionsToPurge, err = s.deleteUserSongbooks(ctx, user, catalogVersionsToPurge)
+	if err != nil {
+		return err
 	}
 
 	// E. Purge catalog versions AFTER all user songbooks are durably deleted (including versions recovered on retry)
-	if s.Catalogs != nil && len(catalogVersionsToPurge) > 0 {
-		for _, versionID := range catalogVersionsToPurge {
-			err := s.Catalogs.PurgeCatalogVersion(ctx, versionID, func(prefix string) error {
-				if prefix != "" && s.Assets != nil {
-					return s.Assets.DeletePrefix(ctx, prefix)
-				}
-				return nil
-			}, store.PurgeCatalogOptions{
-				LeaseDuration:       s.CatalogLeaseDuration,
-				ReleaseLeaseOnError: true,
-			})
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				if errors.Is(err, store.ErrCatalogVersionInUse) {
-					log.Printf("[PRIVACY] Catalog version %s is shared with other active songbooks; preserving shared assets", versionID)
-				} else {
-					log.Printf("[PRIVACY ERROR] Failed purging catalog version %s: %v", versionID, err)
-					return s.failCascade(ctx, user.ID, "purge_catalog_version", "failed to purge catalog version", err, nil)
-				}
-			}
-			if s.Auth != nil {
-				if progErr := s.Auth.RecordAccountDeletionProgress(ctx, user.ID, "purge_catalog_version", "", []string{versionID}); progErr != nil && !errors.Is(progErr, os.ErrNotExist) {
-					log.Printf("[PRIVACY ERROR] Failed recording deletion progress for user %s: %v", user.ID, progErr)
-					return s.failCascade(ctx, user.ID, "record_progress", "failed to record account deletion progress", progErr, catalogVersionsToPurge)
-				}
-			}
-		}
-		user.PendingCatalogVersions = nil
+	if err := s.purgeUserCatalogVersions(ctx, user, catalogVersionsToPurge); err != nil {
+		return err
 	}
 
 	// 6. Delete user record and release email identity claim
-	if s.Auth != nil {
-		userDeleted := false
-		var lastFinalizeErr error
-		for finalizeAttempt := 0; finalizeAttempt < 4; finalizeAttempt++ {
-			err := s.Auth.DeleteUser(ctx, user.ID)
-			if err == nil || errors.Is(err, os.ErrNotExist) {
-				userDeleted = true
-				break
-			}
-			lastFinalizeErr = err
-			current, getErr := s.Auth.GetUser(ctx, user.ID)
-			if getErr != nil || current == nil || len(current.PendingCatalogVersions) == 0 {
-				log.Printf("[PRIVACY ERROR] Failed deleting user record %s: %v", user.ID, err)
-				return s.failCascade(ctx, user.ID, "delete_user", "failed to delete account", err, nil)
-			}
-			for _, versionID := range current.PendingCatalogVersions {
-				if s.Catalogs != nil {
-					pErr := s.Catalogs.PurgeCatalogVersion(ctx, versionID, func(prefix string) error {
-						if prefix != "" && s.Assets != nil {
-							return s.Assets.DeletePrefix(ctx, prefix)
-						}
-						return nil
-					}, store.PurgeCatalogOptions{
-						LeaseDuration:       s.CatalogLeaseDuration,
-						ReleaseLeaseOnError: true,
-					})
-					if pErr != nil && !errors.Is(pErr, os.ErrNotExist) && !errors.Is(pErr, store.ErrCatalogVersionInUse) {
-						return s.failCascade(ctx, user.ID, "purge_catalog_version", "failed to purge catalog version", pErr, nil)
-					}
-				}
-				if progErr := s.Auth.RecordAccountDeletionProgress(ctx, user.ID, "purge_catalog_version", "", []string{versionID}); progErr != nil && !errors.Is(progErr, os.ErrNotExist) {
-					return s.failCascade(ctx, user.ID, "record_progress", "failed to record account deletion progress", progErr, nil)
-				}
-			}
-		}
-		if !userDeleted {
-			log.Printf("[PRIVACY ERROR] Failed deleting user record %s after finalization retry exhaustion: %v", user.ID, lastFinalizeErr)
-			return s.failCascade(ctx, user.ID, "delete_user", "failed to delete account after finalization retry exhaustion", lastFinalizeErr, nil)
-		}
+	if err := s.finalizeUserDeletion(ctx, user.ID); err != nil {
+		return err
 	}
 
 	log.Printf("[PRIVACY] Successfully purged user account: id=%s", user.ID)

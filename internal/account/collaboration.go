@@ -57,42 +57,62 @@ func (s *Service) cleanupOwnedSongbookCollaboration(ctx context.Context, book *m
 	if book == nil {
 		return nil
 	}
+	if err := s.detachForeignSongbookEvents(ctx, book); err != nil {
+		return err
+	}
+	if s.Access == nil {
+		return nil
+	}
+	if err := s.cleanupSongbookGrants(ctx, book.ID); err != nil {
+		return err
+	}
+	return s.cleanupSongbookInvitations(ctx, book.ID)
+}
+
+func (s *Service) detachForeignSongbookEvents(ctx context.Context, book *models.Songbook) error {
+	if s.Events == nil {
+		return nil
+	}
 	retention := s.QueueRetention
 	if retention <= 0 {
 		retention = 14 * 24 * time.Hour
 	}
-	if s.Events != nil {
-		events, err := s.Events.ListEventsBySongbook(ctx, book.ID)
-		if err != nil {
-			return fmt.Errorf("list events for songbook %s: %w", book.ID, err)
+	events, err := s.Events.ListEventsBySongbook(ctx, book.ID)
+	if err != nil {
+		return fmt.Errorf("list events for songbook %s: %w", book.ID, err)
+	}
+	for _, ev := range events {
+		if ev.OwnerID == book.OwnerID {
+			continue
 		}
-		for _, ev := range events {
-			if ev.OwnerID == book.OwnerID {
-				continue
-			}
-			if _, err := s.Events.DetachEventFromSongbook(ctx, ev.ID, book.ID, book.Name, retention); err != nil {
-				return fmt.Errorf("detach foreign event %s from songbook %s: %w", ev.ID, book.ID, err)
-			}
+		if _, err := s.Events.DetachEventFromSongbook(ctx, ev.ID, book.ID, book.Name, retention); err != nil {
+			return fmt.Errorf("detach foreign event %s from songbook %s: %w", ev.ID, book.ID, err)
 		}
 	}
-	if s.Access != nil {
-		grants, err := s.Access.ListSongbookGrantsBySongbook(ctx, book.ID)
-		if err != nil {
-			return fmt.Errorf("list grants for songbook %s: %w", book.ID, err)
+	return nil
+}
+
+func (s *Service) cleanupSongbookGrants(ctx context.Context, songbookID string) error {
+	grants, err := s.Access.ListSongbookGrantsBySongbook(ctx, songbookID)
+	if err != nil {
+		return fmt.Errorf("list grants for songbook %s: %w", songbookID, err)
+	}
+	for _, g := range grants {
+		if err := s.Access.DeleteSongbookGrant(ctx, songbookID, g.UserID); err != nil && !errors.Is(err, store.ErrGrantNotFound) && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete grant %s for songbook %s: %w", g.UserID, songbookID, err)
 		}
-		for _, g := range grants {
-			if err := s.Access.DeleteSongbookGrant(ctx, book.ID, g.UserID); err != nil && !errors.Is(err, store.ErrGrantNotFound) && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("delete grant %s for songbook %s: %w", g.UserID, book.ID, err)
-			}
-		}
-		invitations, err := s.Access.ListSongbookInvitationsBySongbook(ctx, book.ID)
-		if err != nil {
-			return fmt.Errorf("list invitations for songbook %s: %w", book.ID, err)
-		}
-		for _, inv := range invitations {
-			if err := s.Access.DeleteSongbookInvitation(ctx, inv.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("delete invitation %s for songbook %s: %w", inv.ID, book.ID, err)
-			}
+	}
+	return nil
+}
+
+func (s *Service) cleanupSongbookInvitations(ctx context.Context, songbookID string) error {
+	invitations, err := s.Access.ListSongbookInvitationsBySongbook(ctx, songbookID)
+	if err != nil {
+		return fmt.Errorf("list invitations for songbook %s: %w", songbookID, err)
+	}
+	for _, inv := range invitations {
+		if err := s.Access.DeleteSongbookInvitation(ctx, inv.ID); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("delete invitation %s for songbook %s: %w", inv.ID, songbookID, err)
 		}
 	}
 	return nil

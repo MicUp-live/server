@@ -466,7 +466,7 @@ export function PublicBook({ id, code, eventId, eventMode }) {
                 rotationMode={event?.rotation_mode}
                 autoAccept={event?.auto_accept}
                 allowSongReplacement={!!event?.allow_song_replacement}
-                allowKeyChange={event ? (event.allow_key_change !== false) : true}
+                allowKeyChange={event?.allow_key_change !== false}
                 allowWriteIns={!!event?.allow_write_ins}
                 isOpen={isQueueOpen}
                 onClose={() => setIsQueueOpen(false)}

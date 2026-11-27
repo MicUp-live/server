@@ -65,17 +65,27 @@ export function ReplaceSongModal({
     }
 
     return (
-        <div
+        <dialog
+            open
             class="modal-overlay"
-            onClick={onClose}
-            role="dialog"
             aria-modal="true"
             aria-labelledby="replace-song-modal-title"
-            style={{ zIndex: 1100 }}
+            onCancel={(e) => {
+                e.preventDefault()
+                onClose()
+            }}
+            style={{
+                zIndex: 1100,
+                border: 'none',
+                margin: 0,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                width: '100%',
+                height: '100%',
+            }}
         >
             <div
                 class="modal-sheet"
-                onClick={e => e.stopPropagation()}
                 style={{ maxWidth: '460px', width: '100%' }}
             >
                 <div style={{
@@ -111,8 +121,8 @@ export function ReplaceSongModal({
                                 marginBottom: 'var(--space-3)',
                                 padding: 'var(--space-2) var(--space-3)',
                                 borderRadius: 'var(--radius-md)',
-                                background: 'rgba(239, 68, 68, 0.12)',
-                                border: '1px solid rgba(239, 68, 68, 0.35)',
+                                background: 'var(--color-surface-alt)',
+                                border: '1px solid var(--color-danger)',
                                 color: 'var(--color-danger)',
                                 fontSize: 'var(--text-xs)',
                             }}
@@ -122,10 +132,14 @@ export function ReplaceSongModal({
                     )}
 
                     <div style={{ marginBottom: 'var(--space-3)' }}>
-                        <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                        <label
+                            htmlFor="replace-song-title-input"
+                            style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}
+                        >
                             Song Title
                         </label>
                         <input
+                            id="replace-song-title-input"
                             type="text"
                             class="input"
                             value={songTitle}
@@ -138,10 +152,14 @@ export function ReplaceSongModal({
                     </div>
 
                     <div style={{ marginBottom: 'var(--space-3)' }}>
-                        <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                        <label
+                            htmlFor="replace-song-artist-input"
+                            style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}
+                        >
                             Artist
                         </label>
                         <input
+                            id="replace-song-artist-input"
                             type="text"
                             class="input"
                             value={songArtist}
@@ -159,10 +177,13 @@ export function ReplaceSongModal({
 
                     {allowKeyChange && (
                         <div style={{ marginBottom: 'var(--space-3)' }}>
-                            <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                            <div
+                                id="replace-song-pitch-label"
+                                style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}
+                            >
                                 Pitch / Key
-                            </label>
-                            <div style={{ display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
+                            </div>
+                            <div role="group" aria-labelledby="replace-song-pitch-label" style={{ display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
                                 {KEY_OPTIONS.map(opt => (
                                     <button
                                         key={opt.value}
@@ -178,10 +199,14 @@ export function ReplaceSongModal({
                     )}
 
                     <div style={{ marginBottom: 'var(--space-4)' }}>
-                        <label style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}>
+                        <label
+                            htmlFor="replace-song-notes-input"
+                            style={{ display: 'block', fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}
+                        >
                             Notes for Host (Optional)
                         </label>
                         <input
+                            id="replace-song-notes-input"
                             type="text"
                             class="input"
                             value={notes}
@@ -201,6 +226,6 @@ export function ReplaceSongModal({
                     </div>
                 </form>
             </div>
-        </div>
+        </dialog>
     )
 }

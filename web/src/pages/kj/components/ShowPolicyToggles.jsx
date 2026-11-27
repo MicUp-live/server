@@ -65,9 +65,14 @@ export function ShowPolicyToggles({ settingsForm, setSettingsForm }) {
                 padding: 'var(--space-4)',
                 marginBottom: 'var(--space-4)',
             }}>
-                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', cursor: 'pointer' }}>
+                <label
+                    htmlFor="policy-allow-song-replacement"
+                    style={{ display: 'flex', alignItems: 'flex-start', gap: 'var(--space-3)', cursor: 'pointer' }}
+                >
                     <input
+                        id="policy-allow-song-replacement"
                         type="checkbox"
+                        aria-label="Allow Pre-Call Song Changes"
                         checked={!!settingsForm.allow_song_replacement}
                         onChange={e => setSettingsForm(prev => ({ ...prev, allow_song_replacement: e.target.checked }))}
                         style={{ marginTop: '3px' }}

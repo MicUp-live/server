@@ -44,7 +44,7 @@ export function setOnTokenInvalidated(callback) {
  * Automatically includes Authorization header if logged in.
  */
 async function request(method, path, body = null, extraHeaders = null) {
-    const headers = { 'Content-Type': 'application/json', ...(extraHeaders || {}) }
+    const headers = { 'Content-Type': 'application/json', ...extraHeaders }
     const isDeleteAccount = method === 'DELETE' && path === '/auth/me'
 
     if (accessToken) {

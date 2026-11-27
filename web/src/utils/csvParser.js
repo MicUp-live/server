@@ -3,6 +3,36 @@
  * SongbookDB, MTU Hoster, OpenKJ, CompuHost, and generic spreadsheets.
  */
 
+function countUnquotedChar(line, targetChar) {
+    let count = 0
+    let inQuotes = false
+    for (let i = 0; i < line.length; i++) {
+        const ch = line[i]
+        if (ch === '"') {
+            if (inQuotes && line[i + 1] === '"') {
+                i++ // Skip escaped quote
+            } else {
+                inQuotes = !inQuotes
+            }
+            continue
+        }
+        if (!inQuotes && ch === targetChar) {
+            count++
+        }
+    }
+    return count
+}
+
+function scoreDelimiter(lines, char) {
+    const counts = lines.map(line => countUnquotedChar(line, char))
+    if (counts.every(c => c === 0)) return -1
+
+    const first = counts[0]
+    const consistent = first > 0 && counts.every(c => c === first)
+    const total = counts.reduce((a, b) => a + b, 0)
+    return (consistent ? 1000 : 0) + total
+}
+
 /**
  * Detect the delimiter used in a CSV/TSV text sample.
  * Checks comma, tab, semicolon, and pipe.
@@ -11,45 +41,12 @@ export function detectDelimiter(text) {
     const lines = text.split(/\r?\n/).filter(line => line.trim().length > 0).slice(0, 10)
     if (lines.length === 0) return ','
 
-    const candidates = [
-        { char: '\t', name: 'tab' },
-        { char: ',', name: 'comma' },
-        { char: ';', name: 'semicolon' },
-        { char: '|', name: 'pipe' },
-    ]
-
+    const candidates = ['\t', ',', ';', '|']
     let bestChar = ','
     let bestScore = -1
 
-    for (const { char } of candidates) {
-        let counts = []
-        for (const line of lines) {
-            // Count delimiter characters outside of double quotes
-            let count = 0
-            let inQuotes = false
-            for (let i = 0; i < line.length; i++) {
-                if (line[i] === '"') {
-                    if (inQuotes && line[i + 1] === '"') {
-                        i++ // Skip escaped quote
-                    } else {
-                        inQuotes = !inQuotes
-                    }
-                } else if (line[i] === char && !inQuotes) {
-                    count++
-                }
-            }
-            counts.push(count)
-        }
-
-        const nonZero = counts.filter(c => c > 0)
-        if (nonZero.length === 0) continue
-
-        // Check if consistent across lines
-        const first = counts[0]
-        const consistent = counts.every(c => c === first && c > 0)
-        const total = counts.reduce((a, b) => a + b, 0)
-        const score = (consistent ? 1000 : 0) + total
-
+    for (const char of candidates) {
+        const score = scoreDelimiter(lines, char)
         if (score > bestScore) {
             bestScore = score
             bestChar = char
@@ -59,6 +56,55 @@ export function detectDelimiter(text) {
     return bestChar
 }
 
+function pushNonEmptyRow(rows, row) {
+    if (row.some(field => field.length > 0)) {
+        rows.push(row)
+    }
+}
+
+function consumeQuotedStep(state, text) {
+    const { i } = state
+    if (text[i] !== '"') {
+        state.currentField += text[i]
+        state.i += 1
+        return
+    }
+    if (text[i + 1] === '"') {
+        state.currentField += '"'
+        state.i += 2
+        return
+    }
+    state.inQuotes = false
+    state.i += 1
+}
+
+function consumeUnquotedStep(state, text, delim) {
+    const { i } = state
+    const char = text[i]
+    if (char === '"') {
+        state.inQuotes = true
+        state.i += 1
+        return
+    }
+    if (char === delim) {
+        state.currentRow.push(state.currentField.trim())
+        state.currentField = ''
+        state.i += 1
+        return
+    }
+    if (char === '\r' || char === '\n') {
+        const isCrlf = char === '\r' && text[i + 1] === '\n'
+        state.currentRow.push(state.currentField.trim())
+        pushNonEmptyRow(state.rows, state.currentRow)
+        state.currentField = ''
+        state.currentRow = []
+        state.i += isCrlf ? 2 : 1
+        return
+    }
+    state.currentField += char
+    state.i += 1
+}
+
 /**
  * Parse delimited text with RFC 4180 quotes support.
  */
@@ -66,61 +112,28 @@ export function parseDelimitedText(text, delimiter = null) {
     if (!text || typeof text !== 'string') return []
     const delim = delimiter || detectDelimiter(text)
 
-    const rows = []
-    let currentRow = []
-    let currentField = ''
-    let inQuotes = false
-    let i = 0
-    const len = text.length
-
-    while (i < len) {
-        const char = text[i]
-
-        if (char === '"') {
-            if (inQuotes && i + 1 < len && text[i + 1] === '"') {
-                currentField += '"'
-                i += 2
-                continue
-            }
-            inQuotes = !inQuotes
-            i++
-            continue
-        }
-
-        if (!inQuotes && char === delim) {
-            currentRow.push(currentField.trim())
-            currentField = ''
-            i++
-            continue
-        }
-
-        if (!inQuotes && (char === '\r' || char === '\n')) {
-            if (char === '\r' && i + 1 < len && text[i + 1] === '\n') {
-                i++
-            }
-            currentRow.push(currentField.trim())
-            currentField = ''
-            // Only add non-empty rows
-            if (currentRow.some(field => field.length > 0)) {
-                rows.push(currentRow)
-            }
-            currentRow = []
-            i++
-            continue
-        }
-
-        currentField += char
-        i++
+    const state = {
+        rows: [],
+        currentRow: [],
+        currentField: '',
+        inQuotes: false,
+        i: 0,
     }
 
-    if (currentField.length > 0 || currentRow.length > 0) {
-        currentRow.push(currentField.trim())
-        if (currentRow.some(field => field.length > 0)) {
-            rows.push(currentRow)
+    while (state.i < text.length) {
+        if (state.inQuotes) {
+            consumeQuotedStep(state, text)
+        } else {
+            consumeUnquotedStep(state, text, delim)
         }
     }
 
-    return rows
+    if (state.currentField.length > 0 || state.currentRow.length > 0) {
+        state.currentRow.push(state.currentField.trim())
+        pushNonEmptyRow(state.rows, state.currentRow)
+    }
+
+    return state.rows
 }
 
 /**
@@ -291,52 +304,62 @@ export function generateSongFingerprint(artist, title, disc, rowIdx) {
     return `fp-row-${rowIdx}-${Date.now()}`
 }
 
+function readCell(row, index) {
+    if (index < 0 || !row[index]) return ''
+    return row[index].trim()
+}
+
+function dedupeFingerprint(seenFingerprints, baseFingerprint) {
+    const prevCount = seenFingerprints.get(baseFingerprint) || 0
+    const nextCount = prevCount + 1
+    seenFingerprints.set(baseFingerprint, nextCount)
+    return prevCount === 0 ? baseFingerprint : `${baseFingerprint}-v${nextCount}`
+}
+
+function rowToSong(row, idx, mapping, seenFingerprints) {
+    const { artistIndex, titleIndex, discIndex, sourceIndex = -1, trackIndex, genreIndex, videoUrlIndex = -1, locationIndex } = mapping
+    const artist = readCell(row, artistIndex)
+    const title = readCell(row, titleIndex)
+    if (!artist && !title) return null // Skip empty rows
+
+    const disc = readCell(row, discIndex)
+    const source = readCell(row, sourceIndex)
+    const track = parseInt(readCell(row, trackIndex), 10) || 0
+    const genre = readCell(row, genreIndex)
+    const rawVideoUrl = readCell(row, videoUrlIndex)
+    const videoUrl = /^https?:\/\//i.test(rawVideoUrl) ? rawVideoUrl : ''
+    const location = readCell(row, locationIndex)
+
+    const fallbackKey = disc || source || videoUrl || location
+    const baseFingerprint = generateSongFingerprint(artist, title, fallbackKey, idx)
+    const fingerprint = dedupeFingerprint(seenFingerprints, baseFingerprint)
+
+    return {
+        artist: artist || 'Unknown Artist',
+        title: title || 'Unknown Title',
+        disc,
+        source,
+        track_number: track,
+        genre,
+        video_url: videoUrl,
+        location,
+        fingerprint,
+        is_available: true,
+        confidence: (artist && title) ? 'high' : 'medium',
+    }
+}
+
 /**
  * Convert parsed rows and mapping into clean MicUp Song models ready for sync.
  */
 export function rowsToSongs(rows, mapping, hasHeader = true) {
     const dataRows = hasHeader ? rows.slice(1) : rows
-    const { artistIndex, titleIndex, discIndex, sourceIndex = -1, trackIndex, genreIndex, videoUrlIndex = -1, locationIndex } = mapping
-
     const songs = []
     const seenFingerprints = new Map()
 
     dataRows.forEach((row, idx) => {
-        const artist = (artistIndex >= 0 && row[artistIndex]) ? row[artistIndex].trim() : ''
-        const title = (titleIndex >= 0 && row[titleIndex]) ? row[titleIndex].trim() : ''
-        if (!artist && !title) return // Skip empty rows
-
-        const disc = (discIndex >= 0 && row[discIndex]) ? row[discIndex].trim() : ''
-        const source = (sourceIndex >= 0 && row[sourceIndex]) ? row[sourceIndex].trim() : ''
-        const trackStr = (trackIndex >= 0 && row[trackIndex]) ? row[trackIndex].trim() : ''
-        const track = trackStr ? parseInt(trackStr, 10) || 0 : 0
-        const genre = (genreIndex >= 0 && row[genreIndex]) ? row[genreIndex].trim() : ''
-        const rawVideoUrl = (videoUrlIndex >= 0 && row[videoUrlIndex]) ? row[videoUrlIndex].trim() : ''
-        const videoUrl = /^https?:\/\//i.test(rawVideoUrl) ? rawVideoUrl : ''
-        const location = (locationIndex >= 0 && row[locationIndex]) ? row[locationIndex].trim() : ''
-
-        let fingerprint = generateSongFingerprint(artist, title, disc || source || videoUrl || location, idx)
-        if (seenFingerprints.has(fingerprint)) {
-            const count = seenFingerprints.get(fingerprint) + 1
-            seenFingerprints.set(fingerprint, count)
-            fingerprint = `${fingerprint}-v${count}`
-        } else {
-            seenFingerprints.set(fingerprint, 1)
-        }
-
-        songs.push({
-            artist: artist || 'Unknown Artist',
-            title: title || 'Unknown Title',
-            disc: disc,
-            source: source,
-            track_number: track,
-            genre: genre,
-            video_url: videoUrl,
-            location: location,
-            fingerprint: fingerprint,
-            is_available: true,
-            confidence: (artist && title) ? 'high' : 'medium',
-        })
+        const song = rowToSong(row, idx, mapping, seenFingerprints)
+        if (song) songs.push(song)
     })
 
     return songs

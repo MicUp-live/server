@@ -78,7 +78,7 @@ export function ImportAuditView({
                     {showMappingEditor && headers.length > 0 && columnMapping && (
                         <div class="assistant-mapping-grid">
                             <div>
-                                <label class="assistant-mapping-label" for="assistant-map-artist">Artist Column *</label>
+                                <label class="assistant-mapping-label" htmlFor="assistant-map-artist">Artist Column *</label>
                                 <select
                                     id="assistant-map-artist"
                                     class="assistant-mapping-select"
@@ -90,7 +90,7 @@ export function ImportAuditView({
                                 </select>
                             </div>
                             <div>
-                                <label class="assistant-mapping-label" for="assistant-map-title">Title Column *</label>
+                                <label class="assistant-mapping-label" htmlFor="assistant-map-title">Title Column *</label>
                                 <select
                                     id="assistant-map-title"
                                     class="assistant-mapping-select"
@@ -102,7 +102,7 @@ export function ImportAuditView({
                                 </select>
                             </div>
                             <div>
-                                <label class="assistant-mapping-label" for="assistant-map-disc">Disc / Track Code</label>
+                                <label class="assistant-mapping-label" htmlFor="assistant-map-disc">Disc / Track Code</label>
                                 <select
                                     id="assistant-map-disc"
                                     class="assistant-mapping-select"
@@ -114,7 +114,7 @@ export function ImportAuditView({
                                 </select>
                             </div>
                             <div>
-                                <label class="assistant-mapping-label" for="assistant-map-source">Publisher / Source</label>
+                                <label class="assistant-mapping-label" htmlFor="assistant-map-source">Publisher / Source</label>
                                 <select
                                     id="assistant-map-source"
                                     class="assistant-mapping-select"
@@ -126,7 +126,7 @@ export function ImportAuditView({
                                 </select>
                             </div>
                             <div>
-                                <label class="assistant-mapping-label" for="assistant-map-genre">Genre / Tags Column</label>
+                                <label class="assistant-mapping-label" htmlFor="assistant-map-genre">Genre / Tags Column</label>
                                 <select
                                     id="assistant-map-genre"
                                     class="assistant-mapping-select"
@@ -138,7 +138,7 @@ export function ImportAuditView({
                                 </select>
                             </div>
                             <div>
-                                <label class="assistant-mapping-label" for="assistant-map-video-url">Video URL Column</label>
+                                <label class="assistant-mapping-label" htmlFor="assistant-map-video-url">Video URL Column</label>
                                 <select
                                     id="assistant-map-video-url"
                                     class="assistant-mapping-select"
@@ -154,7 +154,7 @@ export function ImportAuditView({
                 </div>
             ) : (
                 <div class="assistant-pattern-bar">
-                    <label class="assistant-pattern-label" for="assistant-naming-pattern">Naming Pattern</label>
+                    <label class="assistant-pattern-label" htmlFor="assistant-naming-pattern">Naming Pattern</label>
                     <select
                         id="assistant-naming-pattern"
                         class="assistant-pattern-select"
@@ -254,7 +254,7 @@ export function ImportAuditView({
                 <span>{includedResultCount.toLocaleString()} / {totalResultCount.toLocaleString()} selected</span>
             </div>
 
-            <div class="assistant-table-wrap" tabIndex={0} role="region" aria-label="Parsed songs preview">
+            <div class="assistant-table-wrap" role="region" aria-label="Parsed songs preview">
                 <table class="assistant-table">
                     <thead>
                         <tr>

@@ -68,17 +68,25 @@ export function SingerQueueModal({
     const displayTitle = venueName ? `${venueName} — ${eventName || 'Show'}` : (eventName || songbookName || 'Live Queue')
 
     return (
-        <div 
+        <dialog
+            open
             class="modal-overlay"
-            onClick={onClose}
-            role="dialog"
             aria-modal="true"
             aria-labelledby="singer-queue-title"
+            onCancel={(e) => {
+                e.preventDefault()
+                onClose()
+            }}
+            style={{
+                border: 'none',
+                margin: 0,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                width: '100%',
+                height: '100%',
+            }}
         >
-            <div 
-                class="modal-sheet modal-sheet-wide"
-                onClick={e => e.stopPropagation()}
-            >
+            <div class="modal-sheet modal-sheet-wide">
                 <SingerQueueHeader
                     displayTitle={displayTitle}
                     eventStatus={effectiveStatus}
@@ -165,6 +173,6 @@ export function SingerQueueModal({
                 onClose={() => setReplaceTarget(null)}
                 onSubmit={replaceMyRequestSong}
             />
-        </div>
+        </dialog>
     )
 }

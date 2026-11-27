@@ -24,7 +24,7 @@ import { loading, restoreSession } from './auth/store'
 export function App() {
   const [path, setPath] = useState(() => window.location.pathname)
   useEffect(() => {
-    restoreSession()
+    void restoreSession()
   }, [])
 
   if (loading.value) {

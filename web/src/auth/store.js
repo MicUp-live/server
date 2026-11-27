@@ -298,49 +298,61 @@ export async function confirmEmailVerification(token) {
     return res
 }
 
+async function parseCatalogResponse(catRes) {
+    const contentType = catRes.headers.get('content-type') || ''
+    if (contentType.includes('json') || typeof DecompressionStream === 'undefined') {
+        return await catRes.json()
+    }
+    const ds = new DecompressionStream('gzip')
+    const stream = catRes.body.pipeThrough(ds)
+    const text = await new Response(stream).text()
+    return JSON.parse(text)
+}
+
+function extractSongsList(data) {
+    if (Array.isArray(data)) return data
+    return data?.songs || data?.tracks || []
+}
+
+async function hydrateSongbookCatalog(item) {
+    if (!item.catalog_url || item.songs?.length) return
+    try {
+        const catRes = await fetch(item.catalog_url)
+        if (!catRes.ok) return
+        const data = await parseCatalogResponse(catRes)
+        item.songs = extractSongsList(data)
+    } catch (err) {
+        console.warn('Could not expand full catalog in data export:', err)
+    }
+}
+
+async function hydrateExportSongbooks(songbooks) {
+    if (!songbooks?.length || typeof fetch === 'undefined') return
+    for (const item of songbooks) {
+        await hydrateSongbookCatalog(item)
+    }
+}
+
+function triggerJsonDownload(data, filename) {
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+}
+
 /**
  * Download complete personal data archive as JSON file.
  */
 export async function exportUserData() {
     const res = await api.get('/auth/me/export')
-
-    // For any songbook with a static catalog asset, hydrate its songs client-side
-    if (res?.songbooks?.length && typeof fetch !== 'undefined') {
-        for (const item of res.songbooks) {
-            if (item.catalog_url && (!item.songs || item.songs.length === 0)) {
-                try {
-                    const catRes = await fetch(item.catalog_url)
-                    if (catRes.ok) {
-                        let data
-                        const contentType = catRes.headers.get('content-type') || ''
-                        if (contentType.includes('json')) {
-                            data = await catRes.json()
-                        } else if (typeof DecompressionStream !== 'undefined') {
-                            const ds = new DecompressionStream('gzip')
-                            const stream = catRes.body.pipeThrough(ds)
-                            const text = await new Response(stream).text()
-                            data = JSON.parse(text)
-                        } else {
-                            data = await catRes.json()
-                        }
-                        item.songs = Array.isArray(data) ? data : (data?.songs || data?.tracks || [])
-                    }
-                } catch (err) {
-                    console.warn('Could not expand full catalog in data export:', err)
-                }
-            }
-        }
-    }
-
-    const blob = new Blob([JSON.stringify(res, null, 2)], { type: 'application/json' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `micup-data-export-${new Date().toISOString().slice(0, 10)}.json`
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(url)
+    await hydrateExportSongbooks(res?.songbooks)
+    const dateStamp = new Date().toISOString().slice(0, 10)
+    triggerJsonDownload(res, `micup-data-export-${dateStamp}.json`)
     return res
 }
 

@@ -44,7 +44,7 @@ export class QueuePollingController {
             this.queueVersion = null
             this.currentDelay = this.interval
             if (this.isActive) {
-                this.refresh(true)
+                void this.refresh(true)
             }
         }
     }
@@ -96,67 +96,91 @@ export class QueuePollingController {
     handleVisibilityChange(hidden) {
         if (!this.isActive || this.isDestroyed) return
         if (!hidden) {
-            this.refresh(true)
+            void this.refresh(true)
         }
     }
 
+    _canPoll() {
+        if (!this.isActive || this.isDestroyed || !this.endpoint || this.isPolling) {
+            return false
+        }
+        return !(this.trackVisibility && typeof document !== 'undefined' && document.hidden)
+    }
+
+    _buildPollUrl() {
+        if (this.queueVersion === null) {
+            return this.endpoint
+        }
+        const separator = this.endpoint.includes('?') ? '&' : '?'
+        return `${this.endpoint}${separator}since=${encodeURIComponent(this.queueVersion)}`
+    }
+
+    _isStaleGeneration(generation) {
+        return !this.isActive || this.isDestroyed || generation !== this._generation
+    }
+
+    _handlePollSuccess(data) {
+        this.currentDelay = this.interval
+        this.onResponse?.(data)
+        if (!data) return
+        if (Number.isInteger(data.queue_version)) {
+            this.queueVersion = data.queue_version
+        }
+        this.onData?.(data)
+    }
+
+    _handlePollError(err) {
+        this.onError?.(err)
+        if (this.stopOn404 && err?.status === 404) {
+            this.stop()
+            return
+        }
+        this.currentDelay = Math.min(this.currentDelay * 2, this.maxInterval)
+    }
+
+    _finishPoll() {
+        this.isPolling = false
+        const pending = this._pendingRefresh
+        this._pendingRefresh = null
+
+        if (this.isDestroyed) return
+        if (!this.isActive) {
+            this.onLoading?.(false)
+            return
+        }
+        if (pending) {
+            if (pending.fullSync) {
+                this.queueVersion = null
+            }
+            void this.poll()
+            if (!this.isPolling) {
+                this.onLoading?.(false)
+            }
+            return
+        }
+        this.onLoading?.(false)
+        const jitter = Math.random() * 500
+        this.timer = setTimeout(() => this.poll(), this.currentDelay + jitter)
+    }
+
     async poll() {
-        if (!this.isActive || this.isDestroyed || !this.endpoint) return
-        if (this.isPolling) return
-        if (this.trackVisibility && typeof document !== 'undefined' && document.hidden) return
+        if (!this._canPoll()) return
 
         this.isPolling = true
         this.onLoading?.(true)
 
         const generation = this._generation
-        const separator = this.endpoint.includes('?') ? '&' : '?'
-        const url = this.queueVersion === null
-            ? this.endpoint
-            : `${this.endpoint}${separator}since=${encodeURIComponent(this.queueVersion)}`
+        const url = this._buildPollUrl()
 
         try {
             const data = await this.fetcher(url)
-            if (!this.isActive || this.isDestroyed || generation !== this._generation) return
-
-            this.currentDelay = this.interval
-            this.onResponse?.(data)
-            if (data) {
-                if (Number.isInteger(data.queue_version)) {
-                    this.queueVersion = data.queue_version
-                }
-                this.onData?.(data)
-            }
+            if (this._isStaleGeneration(generation)) return
+            this._handlePollSuccess(data)
         } catch (err) {
-            if (!this.isActive || this.isDestroyed || generation !== this._generation) return
-            this.onError?.(err)
-
-            if (this.stopOn404 && err?.status === 404) {
-                this.stop()
-                return
-            }
-
-            this.currentDelay = Math.min(this.currentDelay * 2, this.maxInterval)
+            if (this._isStaleGeneration(generation)) return
+            this._handlePollError(err)
         } finally {
-            this.isPolling = false
-            const pending = this._pendingRefresh
-            this._pendingRefresh = null
-            if (this.isActive && !this.isDestroyed) {
-                if (pending) {
-                    if (pending.fullSync) {
-                        this.queueVersion = null
-                    }
-                    this.poll()
-                    if (!this.isPolling) {
-                        this.onLoading?.(false)
-                    }
-                    return
-                }
-                this.onLoading?.(false)
-                const jitter = Math.random() * 500
-                this.timer = setTimeout(() => this.poll(), this.currentDelay + jitter)
-            } else if (!this.isDestroyed) {
-                this.onLoading?.(false)
-            }
+            this._finishPoll()
         }
     }
 
@@ -227,7 +251,7 @@ export function useQueuePolling(options = {}) {
         controllerRef.current = ctrl
 
         if (enabled && endpoint) {
-            ctrl.start()
+            void ctrl.start()
         }
 
         return () => {

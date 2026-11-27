@@ -1,5 +1,202 @@
 import { LetterBar } from '../../../components/LetterBar.jsx'
 
+const SEARCH_PLACEHOLDERS = {
+    artists: 'Filter artists or anthems...',
+    favorites: 'Search your favorites...',
+}
+
+function getSearchPlaceholder(viewMode) {
+    return SEARCH_PLACEHOLDERS[viewMode] || 'Find your anthem (title or artist)...'
+}
+
+function pluralize(count, singular, plural) {
+    return count === 1 ? singular : plural
+}
+
+function getSongsCountLabel({ isSearching, displaySongsCount, activeLetter, totalSongs }) {
+    if (isSearching) {
+        return `${displaySongsCount} results`
+    }
+    if (activeLetter) {
+        return `${displaySongsCount} ${pluralize(displaySongsCount, 'song', 'songs')} in ${activeLetter}`
+    }
+    return `${totalSongs} songs`
+}
+
+function getArtistsCountLabel({ isSearching, artistGroupsCount, uniqueArtistsCount }) {
+    if (isSearching) {
+        return `${artistGroupsCount} results`
+    }
+    if (uniqueArtistsCount !== null) {
+        return `${uniqueArtistsCount} artists`
+    }
+    return 'Loading artists...'
+}
+
+function getFavoritesCountLabel({
+    isSearching,
+    displayedTonightSongsCount,
+    displayedFavoriteArtistsCount,
+    tonightFavoriteSongsCount,
+    favoriteArtistsCount,
+}) {
+    if (isSearching) {
+        return `${displayedTonightSongsCount + displayedFavoriteArtistsCount} results`
+    }
+    const songWord = pluralize(tonightFavoriteSongsCount, 'song', 'songs')
+    const artistWord = pluralize(favoriteArtistsCount, 'artist', 'artists')
+    return `${tonightFavoriteSongsCount} ${songWord} • ${favoriteArtistsCount} ${artistWord} ready to sing tonight`
+}
+
+function getCountSummary(props) {
+    if (props.viewMode === 'songs') {
+        return getSongsCountLabel(props)
+    }
+    if (props.viewMode === 'artists') {
+        return getArtistsCountLabel(props)
+    }
+    if (props.viewMode === 'favorites') {
+        return getFavoritesCountLabel({
+            ...props,
+            favoriteArtistsCount: props.catalogFavoriteArtists.length,
+        })
+    }
+    return null
+}
+
+function FavoriteArtistChip({ artist, isSelected, onSelect }) {
+    const selectedStyle = isSelected
+        ? {
+            background: 'rgba(234, 179, 8, 0.25)',
+            border: '1px solid #eab308',
+            color: '#facc15',
+            fontWeight: 'bold',
+        }
+        : {
+            background: 'var(--color-surface-alt)',
+            border: '1px solid var(--color-border)',
+            color: 'var(--color-text-muted)',
+            fontWeight: 'normal',
+        }
+
+    return (
+        <button
+            type="button"
+            onClick={() => onSelect(isSelected ? null : artist.display_name)}
+            style={{
+                ...selectedStyle,
+                borderRadius: 'var(--radius-full)',
+                padding: '2px 10px',
+                fontSize: 'var(--text-xs)',
+                cursor: 'pointer',
+                whiteSpace: 'nowrap',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+            }}
+        >
+            <span>★ {artist.display_name}</span>
+            <span style={{ opacity: 0.75 }}>({artist.songCount})</span>
+        </button>
+    )
+}
+
+function FavoriteArtistChips({ catalogFavoriteArtists, activeArtistFilter, onSelectArtistFilter }) {
+    if (catalogFavoriteArtists.length === 0) {
+        return null
+    }
+
+    const isAllSelected = !activeArtistFilter
+    const allChipStyle = isAllSelected
+        ? {
+            background: 'var(--color-accent)',
+            color: '#fff',
+            fontWeight: 'bold',
+        }
+        : {
+            background: 'var(--color-surface-alt)',
+            color: 'var(--color-text-muted)',
+            fontWeight: 'normal',
+        }
+
+    return (
+        <div style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 'var(--space-2)',
+            overflowX: 'auto',
+            paddingBottom: 'var(--space-2)',
+            marginBottom: 'var(--space-2)',
+            flexShrink: 0,
+            WebkitOverflowScrolling: 'touch',
+            scrollbarWidth: 'none',
+        }}>
+            <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', whiteSpace: 'nowrap', fontWeight: 'bold' }}>
+                Favorites:
+            </span>
+            <button
+                type="button"
+                onClick={() => onSelectArtistFilter(null)}
+                style={{
+                    ...allChipStyle,
+                    border: '1px solid var(--color-border)',
+                    borderRadius: 'var(--radius-full)',
+                    padding: '2px 10px',
+                    fontSize: 'var(--text-xs)',
+                    cursor: 'pointer',
+                    whiteSpace: 'nowrap',
+                }}
+            >
+                All
+            </button>
+            {catalogFavoriteArtists.map(fa => (
+                <FavoriteArtistChip
+                    key={fa.normalized}
+                    artist={fa}
+                    isSelected={activeArtistFilter === fa.display_name}
+                    onSelect={onSelectArtistFilter}
+                />
+            ))}
+        </div>
+    )
+}
+
+function CatalogLetterBar({
+    viewMode,
+    isSearching,
+    activeLetter,
+    letterCounts,
+    onSelectLetter,
+    activeArtistLetter,
+    artistLetterCounts,
+    onSelectArtistLetter,
+}) {
+    if (isSearching) {
+        return null
+    }
+    if (viewMode === 'songs') {
+        return (
+            <LetterBar
+                activeLetter={activeLetter}
+                letterCounts={letterCounts}
+                onSelectLetter={onSelectLetter}
+                itemType="songs"
+            />
+        )
+    }
+    if (viewMode === 'artists') {
+        return (
+            <LetterBar
+                activeLetter={activeArtistLetter}
+                letterCounts={artistLetterCounts}
+                onSelectLetter={onSelectArtistLetter}
+                itemType="artists"
+            />
+        )
+    }
+    return null
+}
+
 export function CatalogControls({
     viewMode = 'songs',
     query = '',
@@ -25,69 +222,29 @@ export function CatalogControls({
     onExpandAllArtists,
     onCollapseAllArtists,
 }) {
+    const countSummary = getCountSummary({
+        viewMode,
+        isSearching,
+        displaySongsCount,
+        activeLetter,
+        totalSongs,
+        artistGroupsCount,
+        uniqueArtistsCount,
+        displayedTonightSongsCount,
+        displayedFavoriteArtistsCount,
+        tonightFavoriteSongsCount,
+        catalogFavoriteArtists,
+    })
+
     return (
         <div style={{ flexShrink: 0, display: 'flex', flexDirection: 'column' }}>
             {/* Quick Favorite Artist Filter Chips */}
-            {catalogFavoriteArtists.length > 0 && viewMode !== 'favorites' && (
-                <div style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 'var(--space-2)',
-                    overflowX: 'auto',
-                    paddingBottom: 'var(--space-2)',
-                    marginBottom: 'var(--space-2)',
-                    flexShrink: 0,
-                    WebkitOverflowScrolling: 'touch',
-                    scrollbarWidth: 'none',
-                }}>
-                    <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-dim)', whiteSpace: 'nowrap', fontWeight: 'bold' }}>
-                        Favorites:
-                    </span>
-                    <button
-                        type="button"
-                        onClick={() => onSelectArtistFilter(null)}
-                        style={{
-                            background: !activeArtistFilter ? 'var(--color-accent)' : 'var(--color-surface-alt)',
-                            border: '1px solid var(--color-border)',
-                            color: !activeArtistFilter ? '#fff' : 'var(--color-text-muted)',
-                            borderRadius: 'var(--radius-full)',
-                            padding: '2px 10px',
-                            fontSize: 'var(--text-xs)',
-                            fontWeight: !activeArtistFilter ? 'bold' : 'normal',
-                            cursor: 'pointer',
-                            whiteSpace: 'nowrap',
-                        }}
-                    >
-                        All
-                    </button>
-                    {catalogFavoriteArtists.map(fa => {
-                        const isSelected = activeArtistFilter === fa.display_name
-                        return (
-                            <button
-                                key={fa.normalized}
-                                type="button"
-                                onClick={() => onSelectArtistFilter(isSelected ? null : fa.display_name)}
-                                style={{
-                                    background: isSelected ? 'rgba(234, 179, 8, 0.25)' : 'var(--color-surface-alt)',
-                                    border: `1px solid ${isSelected ? '#eab308' : 'var(--color-border)'}`,
-                                    color: isSelected ? '#facc15' : 'var(--color-text-muted)',
-                                    borderRadius: 'var(--radius-full)',
-                                    padding: '2px 10px',
-                                    fontSize: 'var(--text-xs)',
-                                    fontWeight: isSelected ? 'bold' : 'normal',
-                                    cursor: 'pointer',
-                                    whiteSpace: 'nowrap',
-                                    display: 'inline-flex',
-                                    alignItems: 'center',
-                                    gap: '4px',
-                                }}
-                            >
-                                <span>★ {fa.display_name}</span>
-                                <span style={{ opacity: 0.75 }}>({fa.songCount})</span>
-                            </button>
-                        )
-                    })}
-                </div>
+            {viewMode !== 'favorites' && (
+                <FavoriteArtistChips
+                    catalogFavoriteArtists={catalogFavoriteArtists}
+                    activeArtistFilter={activeArtistFilter}
+                    onSelectArtistFilter={onSelectArtistFilter}
+                />
             )}
 
             {/* Search Bar */}
@@ -100,7 +257,7 @@ export function CatalogControls({
                     <input
                         id="catalog-search"
                         type="text"
-                        placeholder={viewMode === 'artists' ? "Filter artists or anthems..." : (viewMode === 'favorites' ? "Search your favorites..." : "Find your anthem (title or artist)...")}
+                        placeholder={getSearchPlaceholder(viewMode)}
                         value={query}
                         onInput={(e) => onQueryChange(e.target.value)}
                         style={{
@@ -142,40 +299,21 @@ export function CatalogControls({
             </div>
 
             {/* Alphabet Letter Bars */}
-            {viewMode === 'songs' && !isSearching && (
-                <LetterBar
-                    activeLetter={activeLetter}
-                    letterCounts={letterCounts}
-                    onSelectLetter={onSelectLetter}
-                    itemType="songs"
-                />
-            )}
-
-            {viewMode === 'artists' && !isSearching && (
-                <LetterBar
-                    activeLetter={activeArtistLetter}
-                    letterCounts={artistLetterCounts}
-                    onSelectLetter={onSelectArtistLetter}
-                    itemType="artists"
-                />
-            )}
+            <CatalogLetterBar
+                viewMode={viewMode}
+                isSearching={isSearching}
+                activeLetter={activeLetter}
+                letterCounts={letterCounts}
+                onSelectLetter={onSelectLetter}
+                activeArtistLetter={activeArtistLetter}
+                artistLetterCounts={artistLetterCounts}
+                onSelectArtistLetter={onSelectArtistLetter}
+            />
 
             {/* List Header Counts */}
             <div style={{ flexShrink: 0, marginBottom: 'var(--space-2)', fontSize: 'var(--text-sm)', color: 'var(--color-text-dim)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                 <div>
-                    {viewMode === 'songs' && (
-                        isSearching
-                            ? `${displaySongsCount} results`
-                            : (activeLetter ? `${displaySongsCount} ${displaySongsCount === 1 ? 'song' : 'songs'} in ${activeLetter}` : `${totalSongs} songs`)
-                    )}
-                    {viewMode === 'artists' && (isSearching
-                        ? `${artistGroupsCount} results`
-                        : (uniqueArtistsCount !== null ? `${uniqueArtistsCount} artists` : 'Loading artists...'))}
-                    {viewMode === 'favorites' && (
-                        isSearching 
-                            ? `${displayedTonightSongsCount + displayedFavoriteArtistsCount} results` 
-                            : `${tonightFavoriteSongsCount} ${tonightFavoriteSongsCount === 1 ? 'song' : 'songs'} • ${catalogFavoriteArtists.length} ${catalogFavoriteArtists.length === 1 ? 'artist' : 'artists'} ready to sing tonight`
-                    )}
+                    {countSummary}
                     {activeArtistFilter && (
                         <span style={{ marginLeft: 'var(--space-2)', color: '#facc15' }}>
                             (filtered by ★ {activeArtistFilter})

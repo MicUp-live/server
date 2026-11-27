@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'preact/hooks'
+import { useState, useEffect, useRef } from 'preact/hooks'
 import { user, isLoggedIn, updateProfile } from '../auth/store'
 import { getScreenName, setScreenName } from '../utils/screenNameStore'
 import { showToast } from './Toast'
@@ -11,11 +11,13 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
     const [nameInput, setNameInput] = useState(currentName)
     const [saving, setSaving] = useState(false)
     const [error, setError] = useState('')
+    const inputRef = useRef(null)
 
     useEffect(() => {
         if (!isOpen) return
         setNameInput(currentScreenName || '')
         setError('')
+        inputRef.current?.focus()
 
         const handleKeyDown = (e) => {
             if (e.key === 'Escape') {
@@ -61,7 +63,15 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
     }
 
     return (
-        <div
+        <dialog
+            open
+            class="modal-overlay"
+            aria-modal="true"
+            aria-labelledby="screen-name-modal-title"
+            onCancel={(e) => {
+                e.preventDefault()
+                onClose?.()
+            }}
             style={{
                 position: 'fixed',
                 inset: 0,
@@ -72,11 +82,13 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
                 justifyContent: 'center',
                 zIndex: 1100,
                 padding: 'var(--space-4)',
+                border: 'none',
+                margin: 0,
+                maxWidth: 'none',
+                maxHeight: 'none',
+                width: '100%',
+                height: '100%',
             }}
-            onClick={onClose}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="screen-name-modal-title"
         >
             <div
                 style={{
@@ -92,7 +104,6 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
                     overflow: 'hidden',
                     position: 'relative',
                 }}
-                onClick={(e) => e.stopPropagation()}
             >
                 {/* Header */}
                 <div
@@ -183,7 +194,7 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
 
                     <div style={{ marginBottom: 'var(--space-4)' }}>
                         <label
-                            for="input-screen-name"
+                            htmlFor="input-screen-name"
                             style={{
                                 display: 'block',
                                 marginBottom: 'var(--space-2)',
@@ -197,6 +208,7 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
                             Your Stage / Screen Name <span style={{ color: 'var(--color-accent)' }}>*</span>
                         </label>
                         <input
+                            ref={inputRef}
                             id="input-screen-name"
                             type="text"
                             maxLength={50}
@@ -213,7 +225,6 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
                                 fontSize: 'var(--text-sm)',
                                 fontWeight: 500,
                             }}
-                            autoFocus
                             required
                         />
                         <span style={{ fontSize: 'var(--text-xs)', color: 'var(--color-text-muted)', display: 'block', marginTop: '4px' }}>
@@ -243,6 +254,6 @@ export function EditScreenNameModal({ isOpen, onClose, onUpdated }) {
                     </div>
                 </form>
             </div>
-        </div>
+        </dialog>
     )
 }

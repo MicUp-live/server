@@ -32,6 +32,40 @@ function formatWeightLabel(weight) {
     return 'Normal (0)'
 }
 
+function addDisplayEntry(displayByKey, key, displayName) {
+    if (!key || displayByKey.has(key)) return
+    displayByKey.set(key, displayName)
+}
+
+function buildSingerDisplayMap(requests, extraNames, initialOrderWeights, draftWeights) {
+    const displayByKey = new Map()
+    for (const req of requests) {
+        const raw = (req?.singer_name || '').trim()
+        addDisplayEntry(displayByKey, normalizeSingerKey(raw), raw)
+    }
+    for (const [key, display] of Object.entries(extraNames)) {
+        addDisplayEntry(displayByKey, key, display)
+    }
+    for (const key of Object.keys(initialOrderWeights)) {
+        addDisplayEntry(displayByKey, key, key)
+    }
+    for (const key of Object.keys(draftWeights)) {
+        addDisplayEntry(displayByKey, key, key)
+    }
+    return displayByKey
+}
+
+function compareSingerRows(a, b) {
+    if (a.isFocused !== b.isFocused) return a.isFocused ? -1 : 1
+    if (a.isAdded !== b.isAdded) return a.isAdded ? -1 : 1
+    const aWeighted = a.initialWeight !== 0
+    const bWeighted = b.initialWeight !== 0
+    if (aWeighted !== bWeighted) return aWeighted ? -1 : 1
+    const absDiff = Math.abs(b.initialWeight) - Math.abs(a.initialWeight)
+    if (absDiff !== 0) return absDiff
+    return a.displayName.localeCompare(b.displayName)
+}
+
 export function SingerWeightsModal({
     isOpen,
     onClose,
@@ -61,30 +95,12 @@ export function SingerWeightsModal({
     }, [isOpen, currentEvent?.id, currentEvent?.singer_weights, initialSinger])
 
     const singerRows = useMemo(() => {
-        const displayByKey = new Map()
-        for (const req of requests) {
-            const raw = (req?.singer_name || '').trim()
-            const key = normalizeSingerKey(raw)
-            if (key && !displayByKey.has(key)) {
-                displayByKey.set(key, raw)
-            }
-        }
-        for (const [key, display] of Object.entries(extraNames)) {
-            if (key && !displayByKey.has(key)) {
-                displayByKey.set(key, display)
-            }
-        }
-        for (const key of Object.keys(initialOrderWeights)) {
-            if (key && !displayByKey.has(key)) {
-                displayByKey.set(key, key)
-            }
-        }
-        for (const key of Object.keys(draftWeights)) {
-            if (key && !displayByKey.has(key)) {
-                displayByKey.set(key, key)
-            }
-        }
-
+        const displayByKey = buildSingerDisplayMap(
+            requests,
+            extraNames,
+            initialOrderWeights,
+            draftWeights,
+        )
         const focusKey = normalizeSingerKey(initialSinger)
         return Array.from(displayByKey.entries())
             .map(([key, displayName]) => ({
@@ -95,17 +111,7 @@ export function SingerWeightsModal({
                 isFocused: focusKey !== '' && key === focusKey,
                 isAdded: Object.prototype.hasOwnProperty.call(extraNames, key) && key !== focusKey,
             }))
-            .sort((a, b) => {
-                if (a.isFocused !== b.isFocused) return a.isFocused ? -1 : 1
-                if (a.isAdded !== b.isAdded) return a.isAdded ? -1 : 1
-                const aWeighted = a.initialWeight !== 0
-                const bWeighted = b.initialWeight !== 0
-                if (aWeighted !== bWeighted) return aWeighted ? -1 : 1
-                if (Math.abs(a.initialWeight) !== Math.abs(b.initialWeight)) {
-                    return Math.abs(b.initialWeight) - Math.abs(a.initialWeight)
-                }
-                return a.displayName.localeCompare(b.displayName)
-            })
+            .sort(compareSingerRows)
     }, [requests, extraNames, initialOrderWeights, draftWeights, initialSinger])
 
     if (!isOpen) return null

@@ -50,6 +50,40 @@ export function filterSingerRequests(requests = []) {
     return { active, completed, declined }
 }
 
+function applyQueueMetadata(data, { eventId, eventStatus, onEventStatusChange, setCurrentRound, setAllowSongReplacement, setLiveEventStatus }) {
+    if (Number.isInteger(data.current_round)) setCurrentRound(data.current_round)
+    if (data.status !== 'no_event') setAllowSongReplacement(!!data.allow_song_replacement)
+    if (!data.event_status) return
+    setLiveEventStatus(data.event_status)
+    if (eventId && data.event_status !== eventStatus) {
+        onEventStatusChange?.(data.event_status)
+    }
+}
+
+function applyPendingRequestUpdate(curr, preqId, reqStatus) {
+    return curr.map(r => (r.id === preqId
+        ? { ...r, status: reqStatus.status, decline_reason: reqStatus.decline_reason || '' }
+        : r))
+}
+
+async function syncPendingRequests({ eventId, currentKey, updated, queue, activeTargetKeyRef, setMyRequests }) {
+    if (!eventId) return
+    const queueIds = new Set(queue.map(q => q.id))
+    const pendingReqs = updated.filter(r => r.status === 'pending' && r.cancel_token && !queueIds.has(r.id))
+    for (const preq of pendingReqs) {
+        try {
+            const reqStatus = await api.get(`/events/${eventId}/requests/${preq.id}?cancel_token=${encodeURIComponent(preq.cancel_token)}`)
+            if (!reqStatus?.status || reqStatus.status === 'pending') continue
+            const next = updateSingerRequests(currentKey, (curr) => applyPendingRequestUpdate(curr, preq.id, reqStatus))
+            if (activeTargetKeyRef.current === currentKey) {
+                setMyRequests(next)
+            }
+        } catch {
+            // Keep current pending status if check fails
+        }
+    }
+}
+
 export function useSingerQueue({ songbookId, eventId, eventStatus, allowSongReplacement: initialAllowSongReplacement = false, isOpen, onClose, onEventJoined, onEventStatusChange }) {
     const [screenName, setScreenNameState] = useState(() => getScreenName(user.value))
     const [showScreenNameModal, setShowScreenNameModal] = useState(false)
@@ -85,7 +119,7 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, allowSongRepl
             releaseScreenWakeLock()
             return
         }
-        requestScreenWakeLock()
+        void requestScreenWakeLock()
         return () => releaseScreenWakeLock()
     }, [isOpen, effectiveEventStatus])
 
@@ -147,49 +181,37 @@ export function useSingerQueue({ songbookId, eventId, eventStatus, allowSongRepl
         if (!currentKey) return
         if (eventId && data.event_id && data.event_id !== eventId) return
 
-        if (Number.isInteger(data.current_round)) setCurrentRound(data.current_round)
-        if (data.status !== 'no_event') setAllowSongReplacement(!!data.allow_song_replacement)
-        if (data.event_status) {
-            setLiveEventStatus(data.event_status)
-            if (eventId && data.event_status !== eventStatus) {
-                onEventStatusChange?.(data.event_status)
-            }
-        }
-        if (data.status === 'no_event') {
-            setNoEvent(true)
-            setQueue([])
-        } else {
-            setNoEvent(false)
-            setQueue(data.queue || [])
-        }
+        applyQueueMetadata(data, {
+            eventId,
+            eventStatus,
+            onEventStatusChange,
+            setCurrentRound,
+            setAllowSongReplacement,
+            setLiveEventStatus,
+        })
+
+        const isNoEvent = data.status === 'no_event'
+        const incomingQueue = data.queue || []
+        setNoEvent(isNoEvent)
+        setQueue(isNoEvent ? [] : incomingQueue)
         setError('')
         setLoading(false)
 
         // Atomically reconcile against latest storage so out-of-band submissions are never lost
         const updated = updateSingerRequests(currentKey, (stored) => {
-            return reconcileSingerRequests(stored, data.queue || [])
+            return reconcileSingerRequests(stored, incomingQueue)
         })
         setMyRequests(updated)
 
         // Check pending requests directly to detect host rejection or acceptance
-        const pendingReqs = updated.filter(r => r.status === 'pending' && r.cancel_token && !(data.queue || []).some(q => q.id === r.id))
-        if (eventId && pendingReqs.length > 0) {
-            for (const preq of pendingReqs) {
-                try {
-                    const reqStatus = await api.get(`/events/${eventId}/requests/${preq.id}?cancel_token=${encodeURIComponent(preq.cancel_token)}`)
-                    if (reqStatus && reqStatus.status && reqStatus.status !== 'pending') {
-                        const next = updateSingerRequests(currentKey, (curr) => {
-                            return curr.map(r => r.id === preq.id ? { ...r, status: reqStatus.status, decline_reason: reqStatus.decline_reason || '' } : r)
-                        })
-                        if (activeTargetKeyRef.current === currentKey) {
-                            setMyRequests(next)
-                        }
-                    }
-                } catch {
-                    // Keep current pending status if check fails
-                }
-            }
-        }
+        await syncPendingRequests({
+            eventId,
+            currentKey,
+            updated,
+            queue: incomingQueue,
+            activeTargetKeyRef,
+            setMyRequests,
+        })
     }, [eventId, eventStatus, songbookId, onEventJoined, onEventStatusChange])
 
     const { refresh: refreshQueue } = useQueuePolling({

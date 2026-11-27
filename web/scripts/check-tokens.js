@@ -13,13 +13,23 @@ if (!fs.existsSync(tokensFile)) {
 }
 
 // 1. Extract defined tokens from tokens.css
+function collectDefinedTokens(text, targetSet) {
+    const tokenRegex = /--[a-zA-Z0-9_-]+/g
+    let match
+    while ((match = tokenRegex.exec(text)) !== null) {
+        let i = tokenRegex.lastIndex
+        while (i < text.length && /\s/.test(text[i])) {
+            i++
+        }
+        if (text[i] === ':') {
+            targetSet.add(match[0])
+        }
+    }
+}
+
 const tokensContent = fs.readFileSync(tokensFile, 'utf8')
 const definedTokens = new Set()
-const tokenDefRegex = /(--[a-zA-Z0-9_-]+)\s*:/g
-let match
-while ((match = tokenDefRegex.exec(tokensContent)) !== null) {
-    definedTokens.add(match[1])
-}
+collectDefinedTokens(tokensContent, definedTokens)
 
 console.log(`Found ${definedTokens.size} declared tokens in tokens.css`)
 
@@ -45,11 +55,7 @@ function checkFile(filePath) {
     
     // Also capture any file-level or component-level defined CSS variables (e.g. in CSS files or style blocks)
     const localDefined = new Set(definedTokens)
-    const localDefRegex = /(--[a-zA-Z0-9_-]+)\s*:/g
-    let localMatch
-    while ((localMatch = localDefRegex.exec(content)) !== null) {
-        localDefined.add(localMatch[1])
-    }
+    collectDefinedTokens(content, localDefined)
 
     const varRegex = /var\(\s*(--[a-zA-Z0-9_-]+)/g
     lines.forEach((line, idx) => {

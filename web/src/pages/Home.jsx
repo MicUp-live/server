@@ -92,7 +92,7 @@ export function Home() {
 
             <div class="home-actions">
                 <form onSubmit={handleOpenBook} class="card stage-code-card">
-                    <label for="book-code-input" class="stage-code-label">
+                    <label htmlFor="book-code-input" class="stage-code-label">
                         Sing tonight? Enter show code, songbook code, or link
                     </label>
                     <div class="stage-code-input-group">

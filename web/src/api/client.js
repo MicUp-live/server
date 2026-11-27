@@ -39,13 +39,8 @@ export function setOnTokenInvalidated(callback) {
     onTokenInvalidated = callback
 }
 
-/**
- * Make an authenticated API request.
- * Automatically includes Authorization header if logged in.
- */
-async function request(method, path, body = null, extraHeaders = null) {
+function buildRequestOptions(method, body, extraHeaders, isDeleteAccount) {
     const headers = { 'Content-Type': 'application/json', ...extraHeaders }
-    const isDeleteAccount = method === 'DELETE' && path === '/auth/me'
 
     if (accessToken) {
         headers['Authorization'] = `Bearer ${accessToken}`
@@ -58,31 +53,50 @@ async function request(method, path, body = null, extraHeaders = null) {
     if (body && method !== 'GET') {
         opts.body = JSON.stringify(body)
     }
+    return opts
+}
 
+function shouldAttemptRefresh(res, isDeleteAccount) {
+    if (res.status !== 401) return false
+    if (!isDeleteAccount) return true
+    return !deletionRecoveryToken && !res.headers?.get?.('X-Deletion-Token')
+}
+
+async function handleErrorResponse(res, method, path, isDeleteAccount) {
+    if (isDeleteAccount) {
+        const headerDeletionToken = res.headers?.get?.('X-Deletion-Token')
+        if (headerDeletionToken) deletionRecoveryToken = headerDeletionToken
+    }
+    const err = await readError(res)
+    if (isDeleteAccount && err?.deletion_token) {
+        deletionRecoveryToken = err.deletion_token
+    }
+    const loggedError = isDeleteAccount ? err?.detail : err
+    console.error(`[MicUp API] ${method} ${path} -> ${res.status}:`, loggedError)
+    throw new ApiError(res.status, err)
+}
+
+/**
+ * Make an authenticated API request.
+ * Automatically includes Authorization header if logged in.
+ */
+async function request(method, path, body = null, extraHeaders = null) {
+    const isDeleteAccount = method === 'DELETE' && path === '/auth/me'
+    const opts = buildRequestOptions(method, body, extraHeaders, isDeleteAccount)
     const url = `${API_BASE}${path}`
     let res = await fetch(url, opts)
 
     // Try auto-refresh on 401
-    const canRecoverDeletion = isDeleteAccount && (deletionRecoveryToken || res.headers?.get?.('X-Deletion-Token'))
-    if (res.status === 401 && !canRecoverDeletion) {
+    if (shouldAttemptRefresh(res, isDeleteAccount)) {
         const refreshed = await tryRefresh()
         if (refreshed) {
-            headers['Authorization'] = `Bearer ${accessToken}`
+            opts.headers['Authorization'] = `Bearer ${accessToken}`
             res = await fetch(url, opts)
         }
     }
 
     if (!res.ok) {
-        if (isDeleteAccount) {
-            const headerDeletionToken = res.headers?.get?.('X-Deletion-Token')
-            if (headerDeletionToken) deletionRecoveryToken = headerDeletionToken
-        }
-        const err = await readError(res)
-        if (isDeleteAccount && err?.deletion_token) {
-            deletionRecoveryToken = err.deletion_token
-        }
-        console.error(`[MicUp API] ${method} ${path} -> ${res.status}:`, isDeleteAccount ? err?.detail : err)
-        throw new ApiError(res.status, err)
+        await handleErrorResponse(res, method, path, isDeleteAccount)
     }
 
     if (isDeleteAccount) {

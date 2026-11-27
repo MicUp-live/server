@@ -29,7 +29,8 @@ export function VerifyEmail() {
             }
         }
 
-        verify()
+        // Errors are caught and reflected in component state inside verify().
+        void verify()
     }, [])
 
     const handleResend = async () => {

@@ -84,6 +84,7 @@ func NewAuthHandler(authStore store.AuthStore, secret string) (*AuthHandler, err
 		PasswordReset: auth.NewService(authStore, secret),
 		secret:        []byte(secret),
 		EmailSender:   email.NewLogSender(),
+		CookieSecure:  true,
 	}, nil
 }
 

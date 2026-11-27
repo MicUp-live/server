@@ -58,12 +58,14 @@ export function Songbooks() {
             } else {
                 setError(sbRes.reason?.message || 'Failed to load songbooks')
             }
+        } catch (err) {
+            setError(err?.message || 'Failed to load songbooks')
         } finally {
             setLoading(false)
         }
     }
 
-    useEffect(() => { load() }, [])
+    useEffect(() => { void load() }, [])
 
     const create = async (event) => {
         event.preventDefault()
@@ -196,7 +198,7 @@ export function Songbooks() {
 
     if (assistant) return (
         <div class="container assistant-import-shell">
-            <AssistantImport songbookId={assistant.id} onComplete={() => { setAssistant(null); load() }} onCancel={() => setAssistant(null)} />
+            <AssistantImport songbookId={assistant.id} onComplete={() => { setAssistant(null); void load() }} onCancel={() => setAssistant(null)} />
         </div>
     )
 
@@ -204,7 +206,7 @@ export function Songbooks() {
         return (
             <SongManagerView
                 songbook={managing}
-                onClose={() => { setManaging(null); load() }}
+                onClose={() => { setManaging(null); void load() }}
                 onSongsChanged={load}
             />
         )

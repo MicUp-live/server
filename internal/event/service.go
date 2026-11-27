@@ -140,30 +140,35 @@ func (s *Service) CreateEvent(ctx context.Context, ownerID string, req models.Ev
 	if req.AllowWriteIns != nil {
 		allowWriteIns = *req.AllowWriteIns
 	}
+	allowSongReplacement := true
+	if req.AllowSongReplacement != nil {
+		allowSongReplacement = *req.AllowSongReplacement
+	}
 
 	eventID := uuid.NewString()
 	event := &models.Event{
-		ID:                 eventID,
-		OwnerID:            ownerID,
-		SongbookID:         req.SongbookID,
-		Name:               name,
-		VenueName:          strings.TrimSpace(req.VenueName),
-		JoinCode:           joinCode,
-		Status:             models.EventStatusActive,
-		QueueVersion:       1,
-		AllowKeyChange:     allowKeyChange,
-		AllowWriteIns:      allowWriteIns,
-		RotationMode:       rotationMode,
-		CurrentRound:       1,
-		TipURL:             strings.TrimSpace(req.TipURL),
-		Announcement:       strings.TrimSpace(req.Announcement),
-		SubmissionDelay:    submissionDelay,
-		MaxActivePerSinger: maxActive,
-		AutoAccept:         autoAccept,
-		Recurring:          req.Recurring,
-		KioskPIN:           pin,
-		OpenKJKey:          models.GenerateOpenKJKey(eventID),
-		CreatedAt:          time.Now().UTC(),
+		ID:                   eventID,
+		OwnerID:              ownerID,
+		SongbookID:           req.SongbookID,
+		Name:                 name,
+		VenueName:            strings.TrimSpace(req.VenueName),
+		JoinCode:             joinCode,
+		Status:               models.EventStatusActive,
+		QueueVersion:         1,
+		AllowKeyChange:       allowKeyChange,
+		AllowWriteIns:        allowWriteIns,
+		AllowSongReplacement: allowSongReplacement,
+		RotationMode:         rotationMode,
+		CurrentRound:         1,
+		TipURL:               strings.TrimSpace(req.TipURL),
+		Announcement:         strings.TrimSpace(req.Announcement),
+		SubmissionDelay:      submissionDelay,
+		MaxActivePerSinger:   maxActive,
+		AutoAccept:           autoAccept,
+		Recurring:            req.Recurring,
+		KioskPIN:             pin,
+		OpenKJKey:            models.GenerateOpenKJKey(eventID),
+		CreatedAt:            time.Now().UTC(),
 	}
 
 	if err := s.Events.CreateEvent(fencedCtx, event); err != nil {
@@ -283,26 +288,27 @@ func (s *Service) GetEventByCode(ctx context.Context, code string) (*CodeResolut
 
 func (s *Service) buildPublicEvent(event *models.Event, sb *models.Songbook) *models.PublicEvent {
 	return &models.PublicEvent{
-		ID:                 event.ID,
-		SongbookID:         event.SongbookID,
-		PublicSongbookID:   sb.PublicID,
-		SongbookName:       sb.Name,
-		VenueName:          event.VenueName,
-		Name:               event.Name,
-		JoinCode:           event.JoinCode,
-		Status:             event.Status,
-		Recurring:          event.Recurring,
-		TipURL:             event.TipURL,
-		Announcement:       event.Announcement,
-		RotationMode:       event.RotationMode,
-		AutoAccept:         event.AutoAccept,
-		SubmissionDelay:    event.SubmissionDelay,
-		MaxActivePerSinger: event.MaxActivePerSinger,
-		AllowKeyChange:     event.AllowKeyChange,
-		AllowWriteIns:      event.AllowWriteIns,
-		CurrentRound:       event.CurrentRound,
-		SongCount:          sb.SongCount,
-		CreatedAt:          event.CreatedAt,
+		ID:                   event.ID,
+		SongbookID:           event.SongbookID,
+		PublicSongbookID:     sb.PublicID,
+		SongbookName:         sb.Name,
+		VenueName:            event.VenueName,
+		Name:                 event.Name,
+		JoinCode:             event.JoinCode,
+		Status:               event.Status,
+		Recurring:            event.Recurring,
+		TipURL:               event.TipURL,
+		Announcement:         event.Announcement,
+		RotationMode:         event.RotationMode,
+		AutoAccept:           event.AutoAccept,
+		SubmissionDelay:      event.SubmissionDelay,
+		MaxActivePerSinger:   event.MaxActivePerSinger,
+		AllowKeyChange:       event.AllowKeyChange,
+		AllowWriteIns:        event.AllowWriteIns,
+		AllowSongReplacement: event.AllowSongReplacement,
+		CurrentRound:         event.CurrentRound,
+		SongCount:            sb.SongCount,
+		CreatedAt:            event.CreatedAt,
 	}
 }
 

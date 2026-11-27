@@ -217,6 +217,7 @@ export function SongRequestModal({ song, songbookId, eventId, eventStatus, event
                 addSingerRequest(activeEventId, {
                     id: created.id,
                     cancel_token: created.cancel_token,
+                    edit_token: created.edit_token,
                     song_title: titleText,
                     song_artist: artistText,
                     is_write_in: isWriteIn,

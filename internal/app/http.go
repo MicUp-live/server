@@ -74,7 +74,7 @@ func loggingMiddleware(next http.Handler) http.Handler {
 
 const (
 	corsAllowedMethods = "GET, POST, PATCH, DELETE, OPTIONS"
-	corsAllowedHeaders = "Content-Type, Authorization, X-Session-ID, X-Friendly-Name, Idempotency-Key, X-Cancel-Token, X-API-Key, X-Deletion-Token"
+	corsAllowedHeaders = "Content-Type, Authorization, X-Session-ID, X-Friendly-Name, Idempotency-Key, X-Cancel-Token, X-Edit-Token, X-API-Key, X-Deletion-Token"
 	corsExposeHeaders  = "X-Queue-Version, Content-Disposition, RateLimit-Limit, RateLimit-Remaining, Retry-After, X-Deletion-Token"
 )
 

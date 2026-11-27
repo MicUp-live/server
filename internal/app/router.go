@@ -315,11 +315,13 @@ func NewRouter(cfg config.Config, dependencies Dependencies) (http.Handler, erro
 	mux.HandleFunc("POST /api/v1/events/{id}/requests", requestLimited(queueHandler.CreateEventRequest))
 	mux.HandleFunc("GET /api/v1/events/{id}/queue", queueHandler.GetEventPublicQueue)
 	mux.HandleFunc("GET /api/v1/events/{id}/requests/{requestID}", authHandler.OptionalAuth(queueHandler.GetRequest))
+	mux.HandleFunc("PATCH /api/v1/events/{id}/requests/{requestID}/song", requestLimited(queueHandler.ReplaceEventRequestSong))
 	mux.HandleFunc("DELETE /api/v1/events/{id}/requests/{requestID}", authHandler.OptionalAuth(queueHandler.DeleteRequest))
 
 	// Host Event Queue Management
 	mux.HandleFunc("GET /api/v1/events/{id}/requests", ownedEventScoped(handlers.DeveloperScopeRequestsRead, queueHandler.ListEventRequests))
 	mux.HandleFunc("PATCH /api/v1/events/{id}/requests/{requestID}", ownedEventScoped(handlers.DeveloperScopeRequestsWrite, queueHandler.UpdateEventRequest))
+	mux.HandleFunc("POST /api/v1/events/{id}/requests/{requestID}/defer", ownedEventScoped(handlers.DeveloperScopeRequestsWrite, queueHandler.DeferEventRequest))
 	mux.HandleFunc("POST /api/v1/events/{id}/requests/reorder", ownedEventScoped(handlers.DeveloperScopeRequestsWrite, queueHandler.ReorderEventRequests))
 
 	// OpenKJ Request-Server Compatibility Adapter

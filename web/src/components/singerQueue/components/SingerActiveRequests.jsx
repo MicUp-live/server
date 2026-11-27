@@ -5,6 +5,8 @@ export function SingerActiveRequests({
     queue,
     currentRound,
     eventStatus,
+    allowSongReplacement = false,
+    onReplaceSong,
     onCancelRequest,
 }) {
     if (!activeRequests || activeRequests.length === 0) return null
@@ -99,6 +101,17 @@ export function SingerActiveRequests({
                                             ? `#${queueIndex + 1} in line • ${formatWaitEstimate(queueIndex)} wait`
                                             : '🎤 In Rotation'}
                                     </span>
+                                )}
+
+                                {!isEnded && allowSongReplacement && req.edit_token && (req.status === 'pending' || req.status === 'accepted') && onReplaceSong && (
+                                    <button
+                                        type="button"
+                                        onClick={() => onReplaceSong(req)}
+                                        class="btn btn-secondary btn-sm"
+                                        title="Change your song while keeping your spot in line"
+                                    >
+                                        🔄 Swap
+                                    </button>
                                 )}
 
                                 {!isEnded && req.status === 'pending' && (

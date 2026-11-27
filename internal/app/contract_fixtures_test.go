@@ -667,7 +667,7 @@ func TestContractFixtures_QueueHost200Public200AndPoll204(t *testing.T) {
 	if exposed := corsRec.Header().Get("Access-Control-Expose-Headers"); exposed != wantExposed {
 		t.Fatalf("Access-Control-Expose-Headers = %q; want %q", exposed, wantExposed)
 	}
-	const wantAllowed = "Content-Type, Authorization, X-Session-ID, X-Friendly-Name, Idempotency-Key, X-Cancel-Token, X-API-Key, X-Deletion-Token"
+	const wantAllowed = "Content-Type, Authorization, X-Session-ID, X-Friendly-Name, Idempotency-Key, X-Cancel-Token, X-Edit-Token, X-API-Key, X-Deletion-Token"
 	if allowed := corsRec.Header().Get("Access-Control-Allow-Headers"); allowed != wantAllowed {
 		t.Fatalf("Access-Control-Allow-Headers = %q; want %q", allowed, wantAllowed)
 	}

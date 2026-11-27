@@ -1,8 +1,10 @@
+import { useState, useEffect } from 'preact/hooks'
 import { useSingerQueue } from './singerQueue/hooks/useSingerQueue.js'
 import { SingerQueueHeader } from './singerQueue/components/SingerQueueHeader.jsx'
 import { SingerScreenNameBanner } from './singerQueue/components/SingerScreenNameBanner.jsx'
 import { SingerDeclinedRequests } from './singerQueue/components/SingerDeclinedRequests.jsx'
 import { SingerActiveRequests } from './singerQueue/components/SingerActiveRequests.jsx'
+import { ReplaceSongModal } from './singerQueue/components/ReplaceSongModal.jsx'
 import { SingerSungRequests } from './singerQueue/components/SingerSungRequests.jsx'
 import { SingerPublicRotation } from './singerQueue/components/SingerPublicRotation.jsx'
 import { EditScreenNameModal } from './EditScreenNameModal.jsx'
@@ -18,12 +20,19 @@ export function SingerQueueModal({
     venueName,
     rotationMode,
     autoAccept,
+    allowSongReplacement = false,
+    allowKeyChange = true,
+    allowWriteIns = false,
     isOpen,
     onClose,
     onEventJoined,
     onEventStatusChange,
     onReRequest,
 }) {
+    const [replaceTarget, setReplaceTarget] = useState(null)
+    useEffect(() => {
+        if (!isOpen) setReplaceTarget(null)
+    }, [isOpen])
     const {
         screenName,
         setScreenNameState,
@@ -33,6 +42,7 @@ export function SingerQueueModal({
         loading,
         currentRound,
         eventStatus: liveEventStatus,
+        allowSongReplacement: liveAllowSongReplacement,
         noEvent,
         joinCodeInput,
         setJoinCodeInput,
@@ -47,8 +57,9 @@ export function SingerQueueModal({
         myUpNext,
         dismissDeclinedRequest,
         cancelMyRequest,
+        replaceMyRequestSong,
         handleJoin,
-    } = useSingerQueue({ songbookId, eventId, eventStatus, isOpen, onClose, onEventJoined, onEventStatusChange })
+    } = useSingerQueue({ songbookId, eventId, eventStatus, allowSongReplacement, isOpen, onClose, onEventJoined, onEventStatusChange })
 
     if (!isOpen) return null
 
@@ -96,6 +107,8 @@ export function SingerQueueModal({
                         queue={queue}
                         currentRound={currentRound}
                         eventStatus={effectiveStatus}
+                        allowSongReplacement={liveAllowSongReplacement}
+                        onReplaceSong={(req) => setReplaceTarget(req)}
                         onCancelRequest={cancelMyRequest}
                     />
 
@@ -143,6 +156,14 @@ export function SingerQueueModal({
                 isOpen={showScreenNameModal}
                 onClose={() => setShowScreenNameModal(false)}
                 onUpdated={(newName) => setScreenNameState(newName)}
+            />
+
+            <ReplaceSongModal
+                request={replaceTarget}
+                allowKeyChange={allowKeyChange}
+                allowWriteIns={allowWriteIns}
+                onClose={() => setReplaceTarget(null)}
+                onSubmit={replaceMyRequestSong}
             />
         </div>
     )

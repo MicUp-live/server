@@ -18,7 +18,7 @@ import (
 const eventSelectColumns = `id, owner_id, songbook_id, detached_songbook_name, venue_name, name, join_code,
 	status, recurring, tip_url, announcement, kiosk_pin, rotation_mode, current_round,
 	auto_accept, submission_delay, max_active_per_singer, allow_key_change, allow_write_ins,
-	singer_weights, queue_version, metadata_version, restarting, detaching,
+	COALESCE(allow_song_replacement, FALSE), singer_weights, queue_version, metadata_version, restarting, detaching,
 	pending_detach_expires_at, deleting, openkj_key, created_at, updated_at, ended_at, expires_at`
 
 func scanEvent(row pgx.Row) (*models.Event, error) {
@@ -35,7 +35,7 @@ func scanEvent(row pgx.Row) (*models.Event, error) {
 		&ev.ID, &ev.OwnerID, &songbookID, &ev.DetachedSongbookName, &ev.VenueName, &ev.Name, &ev.JoinCode,
 		&status, &ev.Recurring, &ev.TipURL, &ev.Announcement, &ev.KioskPIN, &ev.RotationMode, &ev.CurrentRound,
 		&ev.AutoAccept, &ev.SubmissionDelay, &ev.MaxActivePerSinger, &ev.AllowKeyChange, &ev.AllowWriteIns,
-		&weightsJSON, &ev.QueueVersion, &ev.MetadataVersion, &ev.Restarting, &ev.Detaching,
+		&ev.AllowSongReplacement, &weightsJSON, &ev.QueueVersion, &ev.MetadataVersion, &ev.Restarting, &ev.Detaching,
 		&pendingDetachExp, &ev.Deleting, &ev.OpenKJKey, &ev.CreatedAt, &ev.UpdatedAt, &endedAt, &expiresAt,
 	)
 	if err != nil {
@@ -175,16 +175,16 @@ func (s *Store) CreateEvent(ctx context.Context, ev *models.Event) error {
 				id, owner_id, songbook_id, detached_songbook_name, venue_name, name, join_code,
 				status, recurring, tip_url, announcement, kiosk_pin, rotation_mode, current_round,
 				auto_accept, submission_delay, max_active_per_singer, allow_key_change, allow_write_ins,
-				singer_weights, queue_version, metadata_version, restarting, detaching,
+				allow_song_replacement, singer_weights, queue_version, metadata_version, restarting, detaching,
 				pending_detach_expires_at, deleting, openkj_key, created_at, updated_at, ended_at, expires_at
 			) VALUES (
 				$1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-				$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
+				$17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
 			)`,
 			id, ev.OwnerID, nullString(ev.SongbookID), strings.TrimSpace(ev.DetachedSongbookName), ev.VenueName, ev.Name, joinCode,
 			string(status), ev.Recurring, ev.TipURL, ev.Announcement, ev.KioskPIN, rotationMode, currentRound,
 			ev.AutoAccept, submissionDelay, maxActive, ev.AllowKeyChange, ev.AllowWriteIns,
-			weightsJSON, queueVersion, ev.MetadataVersion, ev.Restarting, ev.Detaching,
+			ev.AllowSongReplacement, weightsJSON, queueVersion, ev.MetadataVersion, ev.Restarting, ev.Detaching,
 			unixToNullTime(ev.PendingDetachTTL), ev.Deleting, openKJKey, created, updated, nullTimePtr(ev.EndedAt), unixToNullTime(ev.TTL),
 		)
 		if err != nil {
@@ -331,17 +331,17 @@ func updateEventSnapshotTx(ctx context.Context, tx pgx.Tx, ev *models.Event, bum
 			name = $1, venue_name = $2, songbook_id = $3, status = $4, recurring = $5,
 			tip_url = $6, announcement = $7, kiosk_pin = $8, rotation_mode = $9, current_round = $10,
 			auto_accept = $11, submission_delay = $12, max_active_per_singer = $13, allow_key_change = $14,
-			allow_write_ins = $15, openkj_key = $16, updated_at = $17, expires_at = $18, ended_at = $19,
-			detached_songbook_name = $20, singer_weights = $21,
-			metadata_version = metadata_version + 1, queue_version = queue_version + $22
-		WHERE id = $23 AND restarting = FALSE AND detaching = FALSE AND deleting = FALSE
-			AND queue_version = $24 AND metadata_version = $25
+			allow_write_ins = $15, allow_song_replacement = $16, openkj_key = $17, updated_at = $18,
+			expires_at = $19, ended_at = $20, detached_songbook_name = $21, singer_weights = $22,
+			metadata_version = metadata_version + 1, queue_version = queue_version + $23
+		WHERE id = $24 AND restarting = FALSE AND detaching = FALSE AND deleting = FALSE
+			AND queue_version = $25 AND metadata_version = $26
 		RETURNING queue_version, metadata_version, updated_at`,
 		ev.Name, ev.VenueName, nullString(ev.SongbookID), string(ev.Status), ev.Recurring,
 		ev.TipURL, ev.Announcement, ev.KioskPIN, ev.RotationMode, currentRound,
 		ev.AutoAccept, ev.SubmissionDelay, maxActive, ev.AllowKeyChange,
-		ev.AllowWriteIns, ev.OpenKJKey, now, unixToNullTime(ev.TTL), nullTimePtr(ev.EndedAt),
-		strings.TrimSpace(ev.DetachedSongbookName), weightsJSON, qvInc,
+		ev.AllowWriteIns, ev.AllowSongReplacement, ev.OpenKJKey, now,
+		unixToNullTime(ev.TTL), nullTimePtr(ev.EndedAt), strings.TrimSpace(ev.DetachedSongbookName), weightsJSON, qvInc,
 		ev.ID, ev.QueueVersion, ev.MetadataVersion,
 	).Scan(&newQV, &newMV, &updatedAt)
 	if err != nil {

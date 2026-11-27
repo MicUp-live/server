@@ -2721,6 +2721,176 @@
         }
       }
     },
+    "/events/{id}/requests/{rid}/song": {
+      "patch": {
+        "tags": [
+          "Queue"
+        ],
+        "summary": "Replace queued song before being called",
+        "description": "Allows a singer holding the request's domain-separated edit_token to swap their queued song while the request is still pending or accepted, preserving request ID, rank, round, and rotation slot.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Edit-Token",
+            "in": "header",
+            "required": true,
+            "description": "Domain-separated edit capability token issued when the request was created (cancel tokens are rejected).",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReplaceRequestSong"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request song replaced in place",
+            "headers": {
+              "X-Queue-Version": {
+                "description": "Queue version after replacement.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Request"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "description": "Missing/invalid edit token, song replacement disabled, or write-ins disabled"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Request already called to stage or finalized, or queue changed concurrently"
+          },
+          "410": {
+            "description": "Show has ended"
+          }
+        }
+      }
+    },
+    "/events/{id}/requests/{rid}/defer": {
+      "post": {
+        "tags": [
+          "Queue"
+        ],
+        "summary": "Defer absent singer down the active queue",
+        "description": "Explicitly bumps an active or called singer down 3 positions (or to the end of the active queue if fewer remain) without recording a completed performance. Called (up_next) singers return to accepted status.",
+        "security": [
+          {
+            "DeveloperKeyAuth": []
+          },
+          {
+            "BearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "description": "Optional UUID retained across retries so network retries never defer twice.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "expected_queue_version": {
+                    "type": "integer",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Request deferred",
+            "headers": {
+              "X-Queue-Version": {
+                "description": "Queue version after deferral.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Request"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/InsufficientScope"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/QueueMutationConflict"
+          }
+        }
+      }
+    },
     "/events/{id}/requests/reorder": {
       "post": {
         "tags": [
@@ -3811,6 +3981,10 @@
             "type": "boolean",
             "example": false
           },
+          "allow_song_replacement": {
+            "type": "boolean",
+            "example": true
+          },
           "current_round": {
             "type": "integer",
             "example": 1
@@ -3907,6 +4081,10 @@
             "type": "boolean",
             "default": false
           },
+          "allow_song_replacement": {
+            "type": "boolean",
+            "default": true
+          },
           "kiosk_pin": {
             "type": "string",
             "default": "1234"
@@ -3993,6 +4171,11 @@
             "nullable": true,
             "example": "eyJyIjoiLi4uIn0.sig"
           },
+          "edit_token": {
+            "type": "string",
+            "nullable": true,
+            "example": "eyJyIjoiLi4uIiwicCI6ImVkaXQifQ.sig"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -4005,6 +4188,40 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          }
+        }
+      },
+      "ReplaceRequestSong": {
+        "type": "object",
+        "required": [
+          "song_title"
+        ],
+        "properties": {
+          "song_id": {
+            "type": "string",
+            "example": "s_01h9x82"
+          },
+          "is_write_in": {
+            "type": "boolean",
+            "example": false
+          },
+          "song_title": {
+            "type": "string",
+            "example": "Don't Stop Believin'"
+          },
+          "song_artist": {
+            "type": "string",
+            "example": "Journey"
+          },
+          "key_change": {
+            "type": "integer",
+            "minimum": -6,
+            "maximum": 6,
+            "example": 0
+          },
+          "notes": {
+            "type": "string",
+            "example": "Switching songs before my turn"
           }
         }
       },

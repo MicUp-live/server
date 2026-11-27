@@ -13,6 +13,7 @@ import * as hostReorderAndReconnection from './vignettes/host-reorder-and-reconn
 import * as kioskPatronSession from './vignettes/kiosk-patron-session.mjs'
 import * as queueLifecycle from './vignettes/queue-lifecycle.mjs'
 import * as roundRobinAndAdmission from './vignettes/round-robin-and-admission.mjs'
+import * as showPolicies from './vignettes/show-policies.mjs'
 import * as songbookCatalogManagement from './vignettes/songbook-catalog-management.mjs'
 import * as songbookImportManagement from './vignettes/songbook-import-management.mjs'
 
@@ -28,6 +29,7 @@ const VIGNETTES = {
   [fairPriorityRotation.name]: fairPriorityRotation,
   [kioskPatronSession.name]: kioskPatronSession,
   [roundRobinAndAdmission.name]: roundRobinAndAdmission,
+  [showPolicies.name]: showPolicies,
   [hostReorderAndReconnection.name]: hostReorderAndReconnection,
   [songbookCatalogManagement.name]: songbookCatalogManagement,
   [songbookImportManagement.name]: songbookImportManagement,

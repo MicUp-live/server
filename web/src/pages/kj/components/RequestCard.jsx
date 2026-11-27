@@ -13,6 +13,7 @@ export function RequestCard({
     onMoveRequest,
     onUpdateRequestRound,
     onUpdateStatus,
+    onDeferRequest,
     onDeleteRequest,
     onCopySongInfo,
     onEditRequest,
@@ -441,6 +442,17 @@ export function RequestCard({
                             </button>
                         )}
 
+                        {onDeferRequest && (
+                            <button
+                                type="button"
+                                onClick={() => onDeferRequest(req)}
+                                class="btn btn-secondary btn-sm kj-desktop-only"
+                                title="Absent singer: bump down 3 spots without marking sung"
+                            >
+                                ⏭ Defer
+                            </button>
+                        )}
+
                         <button
                             type="button"
                             onClick={() => onUpdateStatus(req, 'completed')}
@@ -488,6 +500,16 @@ export function RequestCard({
                                     >
                                         <span>⬆</span>
                                         <span>Call Directly to Stage</span>
+                                    </button>
+                                )}
+                                {tab === 'active' && onDeferRequest && (
+                                    <button
+                                        type="button"
+                                        class="kj-action-item"
+                                        onClick={() => { close(); onDeferRequest(req) }}
+                                    >
+                                        <span>⏭</span>
+                                        <span>Defer Absent Singer (Down 3)</span>
                                     </button>
                                 )}
                                 <button

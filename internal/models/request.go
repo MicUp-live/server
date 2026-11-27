@@ -60,6 +60,7 @@ type SongRequest struct {
 	Round         int           `json:"round"`                 // Assigned rotation round (1, 2, 3...)
 	SingerTurn    int           `json:"singer_turn,omitempty"` // Turn index for singer tonight (1st song, 2nd song, etc.)
 	CancelToken   string        `json:"cancel_token,omitempty" dynamodbav:"-"`
+	EditToken     string        `json:"edit_token,omitempty" dynamodbav:"-"`
 	CreatedAt     time.Time     `json:"created_at"`
 	UpdatedAt     time.Time     `json:"updated_at"`
 	CompletedAt   *time.Time    `json:"completed_at,omitempty"`
@@ -89,6 +90,16 @@ type RequestCreate struct {
 	SongTitle  string `json:"song_title"`
 	SongArtist string `json:"song_artist"`
 	SingerName string `json:"singer_name"`
+	KeyChange  int    `json:"key_change"`
+	Notes      string `json:"notes,omitempty"`
+}
+
+// RequestSongReplace contains the singer-editable song fields for pre-call replacement.
+type RequestSongReplace struct {
+	SongID     string `json:"song_id,omitempty"`
+	IsWriteIn  bool   `json:"is_write_in,omitempty"`
+	SongTitle  string `json:"song_title"`
+	SongArtist string `json:"song_artist"`
 	KeyChange  int    `json:"key_change"`
 	Notes      string `json:"notes,omitempty"`
 }

@@ -216,6 +216,7 @@ func (s *Service) submitRequestOnce(ctx context.Context, cmd SubmitRequestCmd) (
 		UpdatedAt:  now,
 	}
 	songReq.CancelToken = GenerateCancelToken(s.Secret, songReq.ID, songReq.EventID)
+	songReq.EditToken = GenerateEditToken(s.Secret, songReq.ID, songReq.EventID)
 
 	var reorderIDs []string
 

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'preact/hooks'
+import { useState, useCallback, useRef } from 'preact/hooks'
 import { api } from '../../../api/client.js'
 import { showToast } from '../../../components/Toast.jsx'
 
@@ -18,6 +18,7 @@ export function useHostQueueMutations({
     const [updatingFeatures, setUpdatingFeatures] = useState(false)
     const [savingSettings, setSavingSettings] = useState(false)
     const [savingWeights, setSavingWeights] = useState(false)
+    const deferringIdsRef = useRef(new Set())
 
     const editRequestDetails = useCallback(async (targetRequest, updates) => {
         if (!targetRequest || !selectedEventId) return false
@@ -113,6 +114,25 @@ export function useHostQueueMutations({
             refreshQueue?.(false)
         } catch {
             showToast('Failed to delete request', 'error')
+        }
+    }, [selectedEventId, setRequests, refreshQueue])
+
+    const deferRequest = useCallback(async (request) => {
+        if (!selectedEventId || !request || deferringIdsRef.current.has(request.id)) return
+        deferringIdsRef.current.add(request.id)
+        try {
+            const headers = typeof crypto !== 'undefined' && crypto.randomUUID
+                ? { 'Idempotency-Key': crypto.randomUUID() }
+                : undefined
+            const updated = await api.post(`/events/${selectedEventId}/requests/${request.id}/defer`, {}, headers)
+            setRequests(prev => prev.map(r => r.id === request.id ? { ...r, ...updated } : r))
+            showToast(`Deferred ${request.singer_name} down 3 spots`)
+            refreshQueue?.(true)
+            return updated
+        } catch (err) {
+            showToast(err?.data?.message || err?.message || 'Failed to defer request', 'error')
+        } finally {
+            deferringIdsRef.current.delete(request.id)
         }
     }, [selectedEventId, setRequests, refreshQueue])
 
@@ -343,6 +363,7 @@ export function useHostQueueMutations({
         updateStatus,
         confirmDecline,
         deleteRequest,
+        deferRequest,
         moveRequest,
         updateRequestRound,
         updateEventStatus,

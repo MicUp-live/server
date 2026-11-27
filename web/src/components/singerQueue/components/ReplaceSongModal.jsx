@@ -176,14 +176,11 @@ export function ReplaceSongModal({
                     </div>
 
                     {allowKeyChange && (
-                        <div style={{ marginBottom: 'var(--space-3)' }}>
-                            <div
-                                id="replace-song-pitch-label"
-                                style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px' }}
-                            >
+                        <fieldset style={{ border: 'none', padding: 0, margin: '0 0 var(--space-3)' }}>
+                            <legend style={{ fontSize: 'var(--text-xs)', fontWeight: 'var(--font-bold)', color: 'var(--color-text-muted)', marginBottom: '4px', padding: 0 }}>
                                 Pitch / Key
-                            </div>
-                            <div role="group" aria-labelledby="replace-song-pitch-label" style={{ display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
+                            </legend>
+                            <div style={{ display: 'flex', gap: 'var(--space-1)', flexWrap: 'wrap' }}>
                                 {KEY_OPTIONS.map(opt => (
                                     <button
                                         key={opt.value}
@@ -195,7 +192,7 @@ export function ReplaceSongModal({
                                     </button>
                                 ))}
                             </div>
-                        </div>
+                        </fieldset>
                     )}
 
                     <div style={{ marginBottom: 'var(--space-4)' }}>
